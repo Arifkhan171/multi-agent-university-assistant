@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="UOLI Assistant — AI-powered chatbot for the University of Loralai. Ask about admissions, faculty, policies, campus life and more.">
+    <meta name="theme-color" content="#006633">
+    <title>UOLI Assistant — University of Loralai Chatbot</title>
+
+    <!-- Preconnect for Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="/static/style.css?v=6">
+
+    <!-- Favicon (inline SVG via data URI) -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f59e0b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9.9 15.5a2 2 0 0 0-1.4-1.4l-6.1-1.6a.5.5 0 0 1 0-1l6.1-1.5a2 2 0 0 0 1.4-1.5l1.6-6.1a.5.5 0 0 1 1 0l1.5 6.1a2 2 0 0 0 1.5 1.5l6.1 1.5a.5.5 0 0 1 0 1l-6.1 1.6a2 2 0 0 0-1.5 1.4l-1.5 6.1a.5.5 0 0 1-1 0z'/></svg>">
+</head>
+<body>
+
+<!-- Sidebar overlay (mobile) -->
+<div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+<!-- ── App Shell ──────────────────────────────────────────── -->
+<div class="app-shell">
+
+    <!-- ── Sidebar ──────────────────────────────────────────── -->
+    <aside class="sidebar" id="sidebar" aria-label="Chat sidebar">
+
+        <!-- Action Buttons Row -->
+        <div style="display: flex; gap: 10px; padding: 16px 14px 10px; align-items: center;">
+            <!-- New conversation button -->
+            <button class="btn-super" id="btn-new-chat" aria-label="Start new conversation">
+                New Conversation
+            </button>
+            
+            <!-- Clear session button -->
+            <button class="btn-super-icon" id="btn-clear-session" title="Clear conversation memory" aria-label="Clear session memory">
+                <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+            </button>
+        </div>
+
+        <!-- History -->
+        <div class="sidebar-section-title">Recent Chats</div>
+        <div class="history-list" id="history-list" role="list" aria-label="Chat history">
+            <div style="padding:10px; font-size:12px; color:var(--text-subtle);">No history yet</div>
+        </div>
+
+        <!-- Stats footer -->
+        <div class="sidebar-footer" id="sidebar-stats" aria-label="System status">
+            <div class="stat-row">
+                <span class="stat-label"><span class="status-dot"></span> Loading…</span>
+            </div>
+        </div>
+
+    </aside>
+
+    <!-- ── Main Chat ─────────────────────────────────────────── -->
+    <main class="chat-main" aria-label="Chat interface">
+
+        <!-- Custom styles for the animations and layout -->
+        <style>
+            .chat-header {
+                height: auto !important;
+                min-height: 140px;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                padding: 16px 20px !important;
+                background: rgba(255, 255, 255, 0.95);
+            }
+            .chat-header-left {
+                flex-direction: column;
+                align-items: center;
+                width: 100%;
+                position: relative;
+                gap: 8px;
+            }
+            .btn-sidebar-toggle {
+                position: absolute;
+                left: 0;
+                top: 0;
+            }
+            .header-logo-large {
+                height: 105px !important; /* Made significantly bigger */
+                object-fit: contain;
+                margin-bottom: 5px;
+                filter: drop-shadow(0 4px 8px rgba(0,0,0,0.15));
+            }
+            
+            /* Vertical Gradient Flowing Title */
+            .animated-title {
+                font-size: 34px; /* Made bigger */
+                font-weight: 900;
+                -webkit-text-stroke: 1px rgba(0, 0, 0, 0.05); /* Slight stroke for extra boldness */
+                margin: 0;
+                text-transform: uppercase;
+                letter-spacing: 2px;
+                text-align: center;
+                
+                /* Top to bottom gradient (Yellow -> Red -> Blue) */
+                background: linear-gradient(180deg, #f59e0b, #ef4444, #3b82f6, #f59e0b, #ef4444);
+                background-size: 100% 400%;
+                color: transparent;
+                -webkit-background-clip: text;
+                background-clip: text;
+                
+                /* Smooth continuous flow, no blinking */
+                animation: flow-vertical 5s linear infinite;
+            }
+            @keyframes flow-vertical {
+                0% { background-position: 0% 0%; }
+                100% { background-position: 0% 100%; }
+            }
+
+            /* Big, colorful, animated buttons */
+            .btn-super {
+                background: linear-gradient(45deg, #ff007a, #7a00ff);
+                background-size: 200% 200%;
+                color: white !important;
+                border: none !important;
+                border-radius: 12px !important;
+                font-size: 15px !important;
+                font-weight: bold !important;
+                box-shadow: 0 4px 15px rgba(255, 0, 122, 0.4);
+                animation: btn-bg-shift 3s ease infinite, btn-pulse 1.5s infinite alternate;
+                cursor: pointer;
+                padding: 14px 20px !important;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex: 1;
+            }
+            .btn-super-icon {
+                background: linear-gradient(45deg, #00c6ff, #0072ff);
+                background-size: 200% 200%;
+                color: white !important;
+                border: none !important;
+                border-radius: 12px !important;
+                width: 54px !important;
+                height: 54px !important;
+                display: flex !important;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 4px 15px rgba(0, 198, 255, 0.4);
+                animation: btn-bg-shift 3s ease infinite, btn-pulse 1.5s infinite alternate-reverse;
+                cursor: pointer;
+            }
+            @keyframes btn-bg-shift {
+                0% { background-position: 0% 50%; }
+                50% { background-position: 100% 50%; }
+                100% { background-position: 0% 50%; }
+            }
+            @keyframes btn-pulse {
+            /* Claude-style Joining Circles Loader */
+            .claude-loader {
+                width: 32px;
+                height: 32px;
+                position: relative;
+                animation: rotate-loader 3s linear infinite;
+                margin: 0 10px;
+            }
+            .c-dot {
+                width: 14px;
+                height: 14px;
+                border-radius: 50%;
+                position: absolute;
+                top: 9px; left: 9px;
+                mix-blend-mode: multiply;
+            }
+            .c-dot1 { background: #ef4444; animation: move1 1.5s ease-in-out infinite; }
+            .c-dot2 { background: #f59e0b; animation: move2 1.5s ease-in-out infinite; }
+            .c-dot3 { background: #3b82f6; animation: move3 1.5s ease-in-out infinite; }
+            .c-dot4 { background: #10b981; animation: move4 1.5s ease-in-out infinite; }
+
+            @keyframes rotate-loader { 100% { transform: rotate(360deg); } }
+            @keyframes move1 { 0%, 100% { transform: translate(0,0) scale(1); } 50% { transform: translate(0, -12px) scale(1.2); } }
+            @keyframes move2 { 0%, 100% { transform: translate(0,0) scale(1); } 50% { transform: translate(12px, 0) scale(1.2); } }
+            @keyframes move3 { 0%, 100% { transform: translate(0,0) scale(1); } 50% { transform: translate(0, 12px) scale(1.2); } }
+            @keyframes move4 { 0%, 100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-12px, 0) scale(1.2); } }
+        </style>
+
+        <!-- Header -->
+        <header class="chat-header">
+            <div class="chat-header-left">
+                <!-- Mobile sidebar toggle -->
+                <button class="btn-sidebar-toggle" id="btn-sidebar-toggle" aria-label="Toggle sidebar" aria-expanded="false">
+                    ☰
+                </button>
+
+                <!-- Large Centered University Logo -->
+                <img src="/static/logo.png" alt="University of Loralai" class="header-logo-large">
+                
+                <!-- Beautiful Animated Name -->
+                <h1 class="animated-title">UOLI Assistant</h1>
+            </div>
+
+            <!-- Agent badge (Hidden visually but kept for JS state) -->
+            <div class="header-agent-badge" id="header-agent-badge" aria-live="polite" style="display: none;">
+                <span class="badge-dot" aria-hidden="true"></span>
+                <span id="agent-label">UOLI Assistant</span>
+            </div>
+            
+            <div class="chat-header-right"></div>
+        </header>
+
+        <!-- Messages area -->
+        <section class="messages-area" id="messages-area" aria-label="Conversation messages" aria-live="polite">
+
+            <!-- Welcome / landing screen -->
+            <div class="welcome-screen" id="welcome-screen">
+                <div class="welcome-icon" aria-hidden="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/></svg>
+                </div>
+                <h2>Welcome to UOLI Assistant</h2>
+            </div>
+
+        </section>
+
+        <!-- Error banner -->
+        <div class="error-banner" id="error-banner" role="alert" aria-live="assertive">
+            <span class="err-icon" aria-hidden="true">⚠️</span>
+            <span id="error-msg">An error occurred. Please try again.</span>
+        </div>
+
+        <!-- Input area -->
+        <div class="input-area">
+            <div class="input-wrapper">
+                <textarea
+                    id="chat-input"
+                    placeholder="Ask anything about UOLI… (Shift+Enter for newline)"
+                    rows="1"
+                    maxlength="2000"
+                    aria-label="Message input"
+                    aria-multiline="true"
+                    autocomplete="off"
+                    spellcheck="true"
+                ></textarea>
+                <button class="btn-send" id="btn-send" aria-label="Send message" title="Send (Enter)">
+                    ➤
+                </button>
+            </div>
+            <div class="input-footer">
+                <span class="input-hint">Enter to send · Shift+Enter for newline</span>
+                <span class="char-counter" id="char-counter" aria-live="polite">0 / 2000</span>
+            </div>
+        </div>
+
+    </main>
+</div>
+
+<!-- Toast notification -->
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<!-- Chat logic -->
+<script src="/static/chat.js?v=6"></script>
+
+</body>
+</html>
