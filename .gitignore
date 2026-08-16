@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────
+#  .gitignore  —  UOLI University AI Chatbot
+# ─────────────────────────────────────────────────────────────
+
+# ── Secrets / Environment ─────────────────────────────────────
+.env
+*.env
+.env.local
+.env.production
+
+# ── Python cache ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ──────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+.conda/
+
+# ── Data / Vector DB (large runtime files) ────────────────────
+data/chroma_db/
+data/graph_rag/
+data/bm25_index.pkl
+data/pdf_cache.json
+data/ocr_cache.json
+data/proposition_cache.json
+data/html_cache.json
+data/page_furniture.json
+data/page_contact_lines.json
+
+# ── Keep parent_chunks.json (it's the core KB data) ──────────
+# data/parent_chunks.json  ← intentionally NOT ignored
+
+# ── Jupyter ───────────────────────────────────────────────────
+.ipynb_checkpoints
+*.ipynb
+
+# ── IDE / Editor ──────────────────────────────────────────────
+.vscode/settings.json
+.vscode/*.code-snippets
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS files ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
+*.txt.bak
+
+# ── Evaluation raw outputs (large) ───────────────────────────
+eval_raw_results.json
+
+# ── Build / dist ─────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# ── MyPy / coverage ──────────────────────────────────────────
+.mypy_cache/
+.pytest_cache/
+htmlcov/
+.coverage
