@@ -125,7 +125,7 @@ PDF_SOURCES      = [ {"url": "...", "category": "...", "label": "..."}, ... ]
 6. No old address is left in code lines: no `/wp-content/`, no `/faculty/<name>`, no `-message` without `/about/`. Addresses left only in comments are listed for you.
 7. `import config` works, and its own checks pass.
 8. New tests pass (offline).
-9. The two old test files give the same results before and after.
+9. The two old test files give the same results before and after (same ok and FAIL lines, including the 2 known FAIL lines).
 10. You run the spec 01 link check. Pass means: no DEAD, no REDIRECTED, no ERROR. NEEDS_REVIEW is fine only when the reason is "HTTP 404 but the browser shows content" (React site).
 11. `git diff` touches only the allowed files. `config.py` changes only inside the markers, the new rules, and the moved tables.
 12. Human check: open 8 random pages and 3 PDFs from `config.py` in your browser. They open. The categories look right.
@@ -147,9 +147,13 @@ Before the session:
    ```
 3. Run the two old tests and save the result (the "before"):
    ```
-   python -m pytest test_page_furniture.py -q
-   python -m pytest test_ingest_safety.py -q
+   python test_page_furniture.py
+   python test_ingest_safety.py
    ```
+   (These two files are scripts, not normal pytest files. Run them with `python`, as shown. Do not use `pytest` on them.)
+   Known "before" result (19 Oct 2026), not caused by this spec:
+   - `test_page_furniture.py`: 2 FAIL lines in section 9 (the live corpus). They read the old data in `data/`, which is rebuilt in spec 08.
+   - `test_ingest_safety.py`: 3 FAIL lines in section 7 ("the address survived", "the switchboard number survived", "the address still survives on the small path"). The cleaning code removes the address and phone from ordinary pages. This belongs to spec 06 (cleaning rules).
 
 In the session:
 4. New session → `/rename 03 update url lists`
