@@ -73,3 +73,14 @@ build/
 .pytest_cache/
 htmlcov/
 .coverage
+
+# ── Generated Reports (runtime output, not source code) ───────
+reports/**/*.csv
+reports/**/*.md
+# Keep the folder itself tracked so scripts can write into it
+!reports/.gitkeep
+
+# ── Playwright (browser binaries, downloaded at runtime) ──────
+.playwright/
+playwright-report/
+test-results/

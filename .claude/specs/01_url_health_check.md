@@ -51,7 +51,9 @@ Output, in `reports/url_health/`:
 
 ## 5. Constraints
 
-- New files only: `tools/url_health_check.py`, `test_url_health_check.py`, `reports/url_health/`.
+- New files only: `tools/url_health_check.py`, `tests/test_url_health_check.py`, `reports/url_health/`. The `tests/` folder is new. Existing test files stay where they are.
+- Add an empty `tools/__init__.py` and `tests/conftest.py` (puts the project folder on the path) so the test can import the tool.
+- Report files stay on your computer only. `.gitignore` already ignores them.
 - No new libraries (use `requests` and `playwright`).
 - No OpenAI calls, no database.
 - Claude runs only the offline tests. A 3-link live test happens only after your OK. You run the full check (about 10–15 minutes).
