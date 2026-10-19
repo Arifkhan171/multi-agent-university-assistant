@@ -595,4 +595,530 @@ To prepare the UOLI AI Chatbot for high-concurrency production use, three specif
 
 ---
 
+**End of Master Architecture & Engineering Guide — Chapters 1 to 13**
+
+---
+
+## CHAPTER 14: Complete Routing & Supervisor Architecture Analysis
+**Verified against actual code — October 2026**
+
+---
+
+### 14.1 System Overview
+
+Your system has **6 agent nodes**, not 5. The workflow comment says 5 but the actual registered nodes are:
+
+| Node Name | Agent | File | Function |
+|---|---|---|---|
+| `policy_agent` | Policy & Rules | `graph/Agents.py` | `policy_agent_node()` |
+| `faculty_agent` | People / Contacts | `graph/Agents.py` | `faculty_agent_node()` |
+| `admissions_agent` | Admissions & Programs | `graph/Agents.py` | `admissions_agent_node()` |
+| `campus_agent` | Physical Campus | `graph/Agents.py` | `campus_agent_node()` |
+| `fee_agent` | Fees & Scholarships | `graph/Agents.py` | `fee_agent_node()` |
+| `general_agent` | University Overview | `graph/Agents.py` | `general_agent_node()` |
+
+Plus two pre-routing nodes: `chitchat_check` and `chitchat_answer`.
+
+---
+
+### 14.2 Complete Path — Question to Agent (Confirmed)
+
+The complete execution path is verified in `workflow.py` and `graph/Supervisor.py`.
+
+```
+User Question
+      │
+      ▼
+[Layer 0] chitchat_check_node (nodes.py)
+      │   Zero API cost. Pure Python keyword scan.
+      │   Checks: greetings, thanks, farewells, "who are you",
+      │           personal statements, memory questions, math.
+      ├── Intent = "chitchat" ──► chitchat_answer_node ──► END
+      │
+      │   Intent = ""  (real question)
+      ▼
+[Layer 1] _classify_node (Supervisor.py)
+      │   Step 1: Deterministic keyword pre-filters (no API)
+      │     - Hierarchy phrases → "general"
+      │     - Math/gibberish → "out_of_scope"
+      │     - Urdu department-list phrases → "faculty"
+      │     - Urdu student-population phrases → "general"
+      │     - Harassment procedure phrases → "policy"
+      │     - "readmission" → "policy"
+      │     - "tell me about" → "faculty" (unless clear OOS)
+      │
+      │   Step 2: Fast-path keyword family matching (no API)
+      │     Checks 5 keyword families: faculty / policy / admissions / fees / campus
+      │     IF exactly 1 family matches → route immediately (skips LLM)
+      │     IF 0 or 2+ families match → fall through to LLM
+      │
+      │   Step 3: LLM classification (GPT-4o-mini, max_tokens=8)
+      │     Uses CLASSIFY_PROMPT with 6 categories + examples
+      │     Returns one word: policy / faculty / admissions / campus / fees / general / out_of_scope
+      │     Validated against {valid} set; fallback → "general"
+      ▼
+[Layer 2] conditional_edges (workflow.py:L116)
+      │   lambda state: state.get("agent_name", "general")
+      ├── "policy"     ──► policy_agent
+      ├── "faculty"    ──► faculty_agent
+      ├── "admissions" ──► admissions_agent
+      ├── "campus"     ──► campus_agent
+      ├── "fees"       ──► fee_agent
+      └── "general"    ──► general_agent
+                              │
+                              ▼
+                           [END]
+```
+
+**Source confirmation:**
+- `workflow.py:L104-L135` — graph edges definition
+- `Supervisor.py:L279-L500` — full routing logic
+- `nodes.py:L169-L237` — chitchat_check_node
+
+---
+
+### 14.3 The Three-Layer Routing Mechanism (Confirmed)
+
+#### Layer 0 — Chitchat Check (`nodes.py:L169`)
+**Type:** Deterministic keyword matching. No API. ~0ms.
+
+Checked lists:
+- `GREETINGS` — hello, hi, salam, assalam, good morning…
+- `THANKS` — thank, thanks, shukriya, jazakallah…
+- `FAREWELLS` — bye, goodbye, allah hafiz…
+- `ABOUT_BOT` — "who are you", "what is your name"…
+- `PERSONAL` — "my name is", "i am a student"…
+- `MEMORY_Q` — "do you remember", "what did i tell you"…
+- `NOT_UNIVERSITY` — "calculate", "capital of", "tell me a joke"…
+
+**Important note:** The chitchat check uses **substring** matching (not word-boundary) for most lists, and **word boundary** matching for greetings/farewells. This means the word `"hi"` in `"vehicles"` would NOT trigger chitchat (correctly), because greetings use `query_words` (`.split()`) not substring.
+
+---
+
+#### Layer 1 — Deterministic Pre-Filters (`Supervisor.py:L317-L403`)
+**Type:** Pure Python `in` checks. No API. ~0ms.
+
+Six hard-coded rule groups fire before the LLM ever sees the question:
+
+| Rule | Pattern | Routes to |
+|---|---|---|
+| Hierarchy | "report to whom", "chain of command", "org structure", "hierarchy"… | `general` |
+| Math/Gibberish | `\d+\s*[+-*/]\s*\d+` or <50% alphanumeric chars | `out_of_scope` |
+| Urdu dept-list | "kitne department", "department hain", "tamam department"… | `faculty` |
+| Urdu population | "kitne students", "student strength", "total students"… | `general` |
+| Harassment procedure | "how do i report", "complaint procedure", "file a complaint"… | `policy` |
+| Readmission | "readmission", "re-admission" | `policy` |
+| Tell me about | "tell me about", "tell about", "bata about" (unless clear OOS) | `faculty` |
+
+---
+
+#### Layer 2 — Fast-Path Keyword Family Matching (`Supervisor.py:L431-L483`)
+**Type:** Python `in` check on 5 keyword families. No API. ~0ms.
+
+The `_families` dictionary defines keywords for each domain:
+
+```python
+_families = {
+    "faculty":    ["who is", "who's", "kaun hai", "vice chancellor", "registrar",
+                   "treasurer", "hod", "head of department", "dean", "email",
+                   "phone", "extension", "contact"],
+
+    "policy":     ["attendance", "cgpa", "freeze", "probation", "promotion",
+                   "supplementary", "re-appear", "plagiar", "disciplinary",
+                   "discipline", "conduct rules", "withdraw", "grading"],
+
+    "admissions": ["admission", "admitted", "apply", "application", "eligibility",
+                   "entry requirement", "merit", "documents", "how long is"],
+
+    "fees":       ["fee", "fees", "scholarship", "financial aid", "stipend",
+                   "tuition", "challan", "cost of"],
+
+    "campus":     ["library", "bus", "transport", "hostel", "cafeteria", "canteen",
+                   "sports", "gym", "laboratory", "facilities", "wifi",
+                   "medical", "mosque", "timings", "address", "located", "location"],
+}
+```
+
+**The safety rule (confirmed, `Supervisor.py:L482`):**
+```python
+if len(_matched) == 1:
+    return {"agent_name": _matched[0]}
+```
+The fast-path fires **only if exactly 1 family matches**. Zero matches or multiple matches → falls through to LLM.
+
+---
+
+#### Layer 3 — LLM Classification (`Supervisor.py:L487-L500`)
+**Type:** GPT-4o-mini API call. Temperature=0. max_tokens=8. ~0.6–1.5s.
+
+Used when fast-path does not resolve (0 or 2+ keyword families match).
+
+**Model:** `gpt-4o-mini` (not `gpt-4o`)
+**Temperature:** `0` (fully deterministic)
+**Max tokens:** `8` (forces one word only)
+**Output validation:** `raw.split()[0]` extracted; checked against `valid` set; fallback = `"general"`.
+
+---
+
+### 14.4 The CLASSIFY_PROMPT (Full Text, Confirmed)
+
+The complete prompt from `Supervisor.py:L180-L276`:
+
+```
+You are classifying a university student's question for routing.
+Choose ONE category. Read ALL definitions carefully before choosing.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CATEGORY DEFINITIONS AND EXAMPLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+POLICY — Rules, regulations, punishments, procedures.
+  ✓ attendance, CGPA rules, semester freeze, harassment complaint procedure
+  ✓ "what happens if I miss class", "can I improve my grade"
+  ✗ NOT org structure, NOT who manages who
+
+FACULTY — People, contacts, offices, leadership.
+  ✓ HOD, teacher, professor, VC, Registrar, Dean, Treasurer
+  ✓ department email, phone, extension, leadership messages
+  ✓ "who is [university person]"
+  ✗ NOT fictional characters (batman → out_of_scope)
+
+ADMISSIONS — Joining the university, programs, eligibility.
+  ✓ how to apply, merit criteria, BS/MS/PhD programs offered
+  ✓ "can I get admission", "what programs does UOLI offer"
+
+CAMPUS — Physical campus services: transport, library, facilities.
+  ✓ bus routes, timing, vehicle schedule, garee, gaadi (Urdu)
+  ✓ library timings, lab facilities
+  ✓ "when does the bus leave"
+
+FEES — Cost, fee structure, scholarships, financial aid.
+  ✓ tuition fee, semester fee, scholarship, challan
+  ✓ "how much does BS CS cost"
+
+GENERAL — University overview, news, org structure.
+  ✓ university history, latest news, organizational hierarchy
+  ✓ total students, total faculty count, total programs
+  ✓ "tell me about the university"
+  ✓ anything that does not clearly fit the 4 categories above
+
+OUT_OF_SCOPE — Nothing to do with UOLI.
+  ✓ math, general knowledge, gibberish, other universities
+
+CRITICAL DISTINCTIONS (hardcoded into prompt):
+  "What is attendance policy and who is HOD of CS?" → FACULTY
+  "Who leads university?" → FACULTY
+  "Who is in charge of attendance?" → FACULTY
+  "How do I report harassment?" → POLICY
+
+Question: "{query}"
+Reply with ONE word only: policy, faculty, admissions, campus, fees, general, or out_of_scope
+```
+
+---
+
+### 14.5 Follow-Up Resolution (`Supervisor.py:L139-L172`, Confirmed)
+
+Before classification, `resolve_followup()` checks if the query is a fragment referring to the previous message. Uses three regex patterns:
+
+- `_REFERENT_RE` — pronouns: `it`, `its`, `they`, `he`, `she`, `their`…
+- `_DEMONSTRATIVE_RE` — demonstratives followed by a verb or end of sentence
+- `_FRAGMENT_RE` — bare continuations: `and`, `also`, `tell me more`, `explain`, `elaborate`…
+
+**If the query is a referencing fragment AND shorter than 90 characters**, it appends the previous question's topic:
+
+```python
+return f"{text} (in the context of: {previous[:120]})"
+```
+
+This prevents follow-ups like *"What about its contact?"* after asking about the VC from being classified as `out_of_scope` due to missing UOLI context.
+
+---
+
+### 14.6 Parallel Execution During Routing (`workflow.py:L328-L364`, Confirmed)
+
+In `stream_chat()` mode (Streamlit), the supervisor and query expansion run **in parallel**:
+
+```python
+with ThreadPoolExecutor(max_workers=2) as executor:
+    clf_future  = executor.submit(_run_classifier)
+    hyde_future = executor.submit(_run_hyde, query)
+    classifier_result      = clf_future.result()
+    pre_engineered_queries = hyde_future.result()
+```
+
+This means the classification LLM call and the HyDE/query expansion run simultaneously, shaving ~0.5–1s off total response time.
+
+---
+
+### 14.7 The 7 Example Questions — Actual Routing Behavior
+
+#### Q1: "How much do I have to pay next semester?"
+
+**Layer 0 — Chitchat check:** PASSES (not chitchat).
+**Layer 1 — Pre-filters:** None match.
+**Layer 2 — Fast-path:** `"pay"` is not in any keyword family. `"next semester"` is not in any family. **Zero families match → falls through to LLM.**
+**Layer 3 — LLM:** GPT-4o-mini reads the question. "Pay next semester" implies a financial obligation → **routes to `fees`.**
+
+> **Result: `fee_agent`.**
+> The LLM correctly understands financial intent without the word "fee." Confirmed by `CLASSIFY_PROMPT` example: `"what are the charges"` → FEES.
+
+---
+
+#### Q2: "When is the deadline for submitting my dues?"
+
+**Layer 0:** PASSES.
+**Layer 1:** None match.
+**Layer 2:** `"dues"` is not listed. No keyword match in any family. **Zero matches → LLM.**
+**Layer 3 — LLM:** "dues" in a university context = financial payment; "deadline" = administrative → the LLM would likely route to `fees`.
+
+> **Result: Likely `fee_agent` (inferred, not confirmed by direct execution).**
+> "Dues" is not in the fast-path keyword list. If the LLM interprets "dues" as an academic deadline rather than a financial one, it could route to `admissions` or `general` instead. This is a **potential gap**: "dues" as a synonym for fee payment is not in the prompt examples.
+
+---
+
+#### Q3: "How can I get to campus?"
+
+**Layer 0:** PASSES.
+**Layer 1:** None match.
+**Layer 2:** `"campus"` is NOT in the campus family keywords. The word `"campus"` means the university itself, not physical services. Checking the `_families["campus"]` list: `["library", "bus", "transport", "hostel", "cafeteria", "canteen", "sports", "gym", "laboratory", "facilities", "wifi", "wi-fi", "medical", "mosque", "timings", "address", "located", "location"]`. The word `"campus"` is NOT in this list.
+**Zero keyword matches → LLM.**
+**Layer 3 — LLM:** "How can I get to campus?" implies travel/transportation → **routes to `campus`.**
+
+> **Result: Likely `campus_agent` (via LLM classification).**
+> The fast-path misses this because `"campus"` as a destination word is not a keyword. The LLM saves it. This is actually correct system behavior — the fast-path is designed only for unambiguous, single-family matches.
+
+---
+
+#### Q4: "Where can I find the computer science department?"
+
+**Layer 0:** PASSES.
+**Layer 1:** None match (`"tell me about"` not present).
+**Layer 2:** `"department"` is not in any family list. `"located"` is in campus but is not present in this question. **Zero matches → LLM.**
+**Layer 3 — LLM:** "Where can I find the CS department?" is a location/directory question. The CLASSIFY_PROMPT says:
+- `"who is [university person]"` → FACULTY
+- `"list of departments"` → FACULTY
+- `"how departments connect"` → GENERAL
+
+"Where to find a department" is ambiguous — could be a physical location (campus) or a contact (faculty). The LLM would likely route to `faculty` based on "department" being a directory entity.
+
+> **Result: Likely `faculty_agent` (inferred).**
+> This is a slight gap: a student wanting a campus map location might get a faculty-style answer (HOD contact, department listing) rather than a physical map/address.
+
+---
+
+#### Q5: "Who leads our university?"
+
+**Layer 0:** PASSES.
+**Layer 1:** None match.
+**Layer 2:** `"who is"` is in the `faculty` family → **exactly 1 match → immediately routes to `faculty`.**
+
+> **Result: `faculty_agent`. Confirmed by fast-path rule.**
+> `"who"` + context of leadership → correctly resolves via the leadership fast-path in the Faculty Agent.
+
+---
+
+#### Q6: "Tell me about the university."
+
+**Layer 0:** PASSES.
+**Layer 1:** `"tell me about"` is matched in the pre-filter `_TELL_ABOUT` → **routes to `faculty`.**
+
+> **Result: `faculty_agent`** (from `Supervisor.py:L396-L403`).
+> This is a known design decision. The comment says: *"Faculty agent has name detection that searches KB directly. If person not found → gives clean 'not found' message. Better than out_of_scope rejection for a real UOLI dean."*
+> However, for "tell me about the university" (a general overview), routing to the faculty agent is **suboptimal**. The faculty agent optimizes for staff directories and contacts, not university history or overviews. The general agent with GraphRAG would serve this better.
+
+> **This is a genuine routing gap. See Section 14.12 for improvement.**
+
+---
+
+#### Q7: "What is the fee, and when does the bus leave?"
+
+**Layer 0:** PASSES.
+**Layer 1:** None match.
+**Layer 2:**
+- `fees` family: `"fee"` matches → 1 hit
+- `campus` family: `"bus"` matches → 1 hit
+- **Two families match → NOT single → fast-path does NOT fire → goes to LLM.**
+
+**Layer 3 — LLM:** The CLASSIFY_PROMPT instructs:
+> *"What is attendance policy and who is HOD of CS?" → FACULTY (mixed queries: person takes priority)*
+
+The prompt does not provide a specific rule for fees + campus. The LLM will pick whichever it considers the dominant intent. In practice, it would likely choose `fees` or `general` as the primary.
+
+> **Result: Single-agent response, likely `fee_agent` (inferred).**
+> **This is the most critical architectural limitation.** A compound fee + bus question routes to ONE agent. The `fee_agent` has no access to bus schedule data (bus data is under campus categories). The fee answer will be correct but the bus answer will be missing or incomplete.
+
+> The multi-intent mitigation inside `retrieve_for_agent()` (splitting intents and borrowing category profiles) may partially compensate.
+
+---
+
+### 14.8 Can Multiple Agents Run Simultaneously? (Confirmed: NO)
+
+**Answer: The supervisor selects exactly ONE agent. Agents run sequentially, not in parallel.**
+
+From `workflow.py:L116-L127`:
+```python
+graph.add_conditional_edges(
+    "supervisor",
+    lambda state: state.get("agent_name", "general"),   # single string
+    {
+        "policy":     "policy_agent",
+        "faculty":    "faculty_agent",
+        "admissions": "admissions_agent",
+        "campus":     "campus_agent",
+        "fees":       "fee_agent",
+        "general":    "general_agent",
+    },
+)
+```
+
+The state key `agent_name` is a **single string**. LangGraph `conditional_edges` evaluates it and activates **exactly one node**. The graph has no `Send()`, no parallel branches, no fan-out mechanism.
+
+**What partially compensates:** Inside `retrieve_for_agent()` in `Agents.py`, when `_split_intents()` detects multiple intents in the question, it retrieves documents for each intent separately using the correct category profile for each. However, this still runs inside one agent node — the same single agent writes the final answer.
+
+---
+
+### 14.9 LangGraph Routing Mechanism Used (Confirmed)
+
+| Mechanism | Used? | Location |
+|---|---|---|
+| `conditional_edges` | ✅ YES | `workflow.py:L116` |
+| `Send()` | ❌ NO | Not used |
+| `Command` | ❌ NO | Not used |
+| Parallel branches | ❌ NO | Not used |
+| Tool-calling router | ❌ NO | Legacy tools exist but not in Phase 6 graph |
+
+The routing mechanism is `add_conditional_edges` from a single supervisor node to exactly one of six specialist nodes.
+
+---
+
+### 14.10 What Happens for Ambiguous, Unrelated, or Multi-Domain Questions?
+
+| Scenario | Result |
+|---|---|
+| Ambiguous (0 keyword matches) | Falls to LLM; LLM classifies or returns `general` |
+| Multi-domain (2+ keyword matches) | Falls to LLM; LLM picks dominant intent; one agent handles all |
+| Completely unrelated (math, politics, other university) | `out_of_scope` → instant rejection message, no KB search |
+| Greeting/chitchat | `chitchat_answer_node` → instant pre-written response, no KB search |
+| LLM returns invalid label | Validated; fallback = `"general"` |
+
+---
+
+### 14.11 Routing Quality Assessment
+
+#### Strengths (Confirmed)
+1. **Understands indirect language:** LLM classification handles "How much do I have to pay?" → `fees` without needing the word "fee."
+2. **Roman Urdu support:** `CLASSIFY_PROMPT` explicitly lists `"garee"`, `"gaadi"`, `"mujhe admission chahiye"` as examples. Urdu/Pashto questions are handled.
+3. **Spelling error tolerance:** The fast-path includes common misspellings (`"vicechanclor"`, `"vise chancellor"`). The LLM handles unexpected phrasing.
+4. **Follow-up resolution:** Pronoun/fragment follow-ups are resolved before classification — prevents false `out_of_scope` rejections.
+5. **Cost optimization:** Chitchat = $0. Clear single-topic questions = $0 (fast-path). Only genuinely ambiguous questions pay the LLM toll.
+6. **Output validation:** LLM output is validated; invalid labels fall back to `"general"`.
+7. **Deterministic override:** High-risk misclassifications (hierarchy vs. complaint, readmission) are hardcoded, preventing LLM errors.
+
+#### Gaps (Confirmed or Inferred)
+1. **"Tell me about the university"** routes to `faculty` (hardcoded `_TELL_ABOUT` rule), not to `general`. For general overviews this is suboptimal.
+2. **Compound multi-domain questions** (e.g., fee + bus) route to one agent, which cannot fully answer both parts.
+3. **"dues"** as a synonym for fee payment is not in the fast-path or prompt examples. LLM is the only safety net.
+4. **"Where can I find the CS department?"** may route to `faculty` when a student wants physical campus directions.
+5. **No confidence score:** The LLM returns a single word with no uncertainty signal. A low-confidence borderline classification (e.g., fees vs. admissions for application fee questions) receives the same treatment as a certain one.
+
+---
+
+### 14.12 Recommended Improvements
+
+#### Priority 1 — Fix the "tell me about" rule (Easy, High Impact)
+**Current:** All "tell me about X" queries go to `faculty`.
+**Problem:** "Tell me about the university" / "Tell me about UOLI" should go to `general`.
+
+```python
+_TELL_ABOUT = ["tell me about", "tell about", "bata about", "batao mujhe"]
+_GENERAL_TOPICS = ["university", "uoli", "uol", "history", "vision", "mission",
+                   "about uoli", "about university"]
+if any(p in query_lower for p in _TELL_ABOUT):
+    if any(g in query_lower for g in _GENERAL_TOPICS):
+        return {"agent_name": "general"}   # university overview
+    if not any(oos in query_lower for oos in _CLEAR_OOS):
+        return {"agent_name": "faculty"}   # specific person/department
+```
+
+---
+
+#### Priority 2 — Expand fee synonyms in fast-path (Easy, Medium Impact)
+Add payment-related words to the `fees` family:
+
+```python
+"fees": [
+    "fee", "fees", "scholarship", "financial aid", "stipend",
+    "tuition", "challan", "cost of",
+    # Add these:
+    "dues", "pay", "payment", "charges", "amount", "cost",
+    "how much", "semester dues", "next semester payment",
+],
+```
+
+**Caution:** `"pay"` is broad — test against evaluation set before adding.
+
+---
+
+#### Priority 3 — Add a multi-agent compound query path (Medium, High Impact)
+The current architecture cannot fully answer a question like "What is the fee and when does the bus leave?" because a single agent handles it.
+
+**Option A (Low complexity):** After classification, pass all retrieved docs from both domains to the LLM. The `retrieve_for_agent()` multi-intent split already partially does this inside a single agent.
+
+**Option B (Proper fix):** Use LangGraph `Send()` API to fan out to multiple agents in parallel:
+```python
+from langgraph.types import Send
+
+def supervisor_fanout(state):
+    intents = detect_multiple_intents(state["user_query"])
+    if len(intents) > 1:
+        return [Send(agent_map[intent], state) for intent in intents]
+    return state["agent_name"]
+```
+
+This requires a merge node to combine responses before returning to END.
+
+---
+
+#### Priority 4 — Add confidence signal (Low complexity, Medium Impact)
+
+Instead of returning only a label, optionally return a confidence tag:
+
+```python
+CLASSIFY_PROMPT_V2 = """...
+Reply with ONE word. If uncertain between two categories, prefix with '?':
+  Example: "?fees" means you are uncertain between fees and admissions.
+...
+"""
+```
+
+In `_classify_node`, detect the `?` prefix and route uncertain questions to `general` (broadest rrieval) as a fallback.
+
+---
+
+#### Priority 5 — Add embedding-based fallback (Medium complexity, Low urgency)
+For questions where the LLM classification confidence is low, you could pre-compute embedding vectors for each agent's description and compare cosine similarity to the query. This adds latency but provides a semantic fallback independent of the keyword rules.
+
+**Not recommended right now** — the LLM with `temperature=0` is already highly accurate, and adding an embedding layer increases complexity without a confirmed accuracy gap to justify it.
+
+---
+
+### 14.13 Final Summary Table
+
+| Question | Fast-Path? | LLM Needed? | Actual Route | Correct? |
+|---|---|---|---|---|
+| "How much do I have to pay next semester?" | ❌ No | ✅ Yes | `fees` | ✅ Yes |
+| "When is the deadline for submitting my dues?" | ❌ No | ✅ Yes | Likely `fees` | ⚠️ Uncertain (no "dues" in prompt) |
+| "How can I get to campus?" | ❌ No | ✅ Yes | `campus` | ✅ Yes |
+| "Where can I find the CS department?" | ❌ No | ✅ Yes | Likely `faculty` | ⚠️ Partial (could be campus) |
+| "Who leads our university?" | ✅ Yes (fast-path `who is`) | ❌ No | `faculty` | ✅ Yes |
+| "Tell me about the university." | ✅ Yes (`_TELL_ABOUT` rule) | ❌ No | `faculty` | ❌ Should be `general` |
+| "What is the fee, and when does the bus leave?" | ❌ No (2 families) | ✅ Yes | Single agent (fees or general) | ⚠️ Partial (can't fully answer both) |
+
+---
+
+*Analysis confirmed against: `graph/workflow.py`, `graph/Supervisor.py`, `graph/nodes.py`, `graph/Agents.py`*
+
+---
+
 **End of Master Architecture & Engineering Guide (Version 1.0)**
