@@ -363,6 +363,11 @@ UNIVERSITY_PAGES = [
     {"url": 'https://uoli.edu.pk/services/student-resources', "category": 'general'},
     {"url": 'https://uoli.edu.pk/about/dean-message', "category": 'overview'},
     {"url": 'https://uoli.edu.pk/about/vision-mission', "category": 'overview'},
+    {"url": 'https://uoli.edu.pk/news/olive-oil-extraction-unit-installed-by-tika-at-university-of-loralai', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/research/innovation/events', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/research/innovation/events/three-days-olive-value-addition-olive-soap-activity-completed-successfully', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/research/innovation/events/session-3-financial-literacy-for-startups-ceul-cohort-1', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/research/innovation/events/business-incubation-program-officially-launched-cohort-1', "category": 'general'},
 ]
 
 PDF_SOURCES = [

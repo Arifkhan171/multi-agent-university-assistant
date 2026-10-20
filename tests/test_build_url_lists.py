@@ -213,3 +213,62 @@ def test_faculty_source_rejects_other_pages():
     for url in (HOME + "/news/news-1", HOME + "/about/vc-message",
                 HOME + "/faculty/commerce", HOME + "/academics/departments", ""):
         assert not _is_faculty_source(url)
+
+
+# ── --append-from (spec 02b) ──────────────────────────────────────────────────
+
+def _setup_lists(tmp_path, newline="\n"):
+    header = ["address", "category", "keep", "note"]
+    path = tmp_path / "pages.csv"
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        csv.writer(handle, lineterminator=newline).writerows(
+            [header, [HOME + "/about", "overview", "yes", ""]])
+    return path
+
+
+def _review(tmp_path, rows):
+    path = tmp_path / "review.csv"
+    _write_csv(path, ["address", "category", "keep", "note"], rows)
+    return path
+
+
+def test_append_adds_new_rows_and_second_run_changes_nothing(tmp_path):
+    pages = _setup_lists(tmp_path)
+    review = _review(tmp_path, [[HOME + "/a", "general", "yes", "n"], [HOME + "/ABOUT", "overview", "yes", ""]])
+    added, skipped = bl.append_pages(review, tmp_path)
+    assert [r["address"] for r in added] == [HOME + "/a"] and len(skipped) == 1
+    first = pages.read_bytes()
+    added, _ = bl.append_pages(review, tmp_path)
+    assert added == [] and pages.read_bytes() == first
+
+
+def test_append_keeps_crlf_and_adds_missing_final_newline(tmp_path):
+    pages = _setup_lists(tmp_path, newline="\r\n")
+    pages.write_bytes(pages.read_bytes().rstrip(b"\r\n"))
+    bl.append_pages(_review(tmp_path, [[HOME + "/a", "general", "yes", ""]]), tmp_path)
+    raw = pages.read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n") == 3  # header + 2 rows, no bare LF
+
+
+@pytest.mark.parametrize("row", [
+    [HOME + "/a", "students", "yes", ""],
+    [HOME + "/a/", "general", "yes", ""],
+    ["https://other.example/a", "general", "yes", ""],
+    [HOME + "/a", "general", "maybe", ""],
+])
+def test_append_stops_on_a_bad_row_and_changes_nothing(tmp_path, row):
+    pages = _setup_lists(tmp_path)
+    before = pages.read_bytes()
+    review = _review(tmp_path, [[HOME + "/ok", "general", "yes", ""], row])
+    with pytest.raises(bl.UrlListError, match="review.csv row 3"):
+        bl.append_pages(review, tmp_path)
+    assert pages.read_bytes() == before
+
+
+def test_append_stops_on_duplicate_inside_the_review_file(tmp_path):
+    pages = _setup_lists(tmp_path)
+    before = pages.read_bytes()
+    review = _review(tmp_path, [[HOME + "/a", "general", "yes", ""], [HOME + "/a", "general", "no", ""]])
+    with pytest.raises(bl.UrlListError, match="same address as row 2"):
+        bl.append_pages(review, tmp_path)
+    assert pages.read_bytes() == before
