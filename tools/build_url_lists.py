@@ -150,6 +150,40 @@ def write_config(pages: List[Row], pdfs: List[Row], path: Path = CONFIG_PATH) ->
     return True
 
 
+def append_pages(source: Path, list_dir: Path = LIST_DIR) -> Tuple[List[Row], List[Row]]:
+    """Add the rows of `source` that pages.csv does not have yet. Returns (added, skipped).
+
+    Everything is checked before the first byte is written, so one bad row
+    leaves pages.csv untouched."""
+    pages_path = list_dir / "pages.csv"
+    existing = read_rows(pages_path, PAGE_COLUMNS)
+    incoming = read_rows(source, PAGE_COLUMNS)
+    errors = check_rows(incoming, source.name, False)
+    if errors:
+        raise UrlListError("\n".join(errors))
+    known = {config._url_path(r["address"]) for r in existing}
+    added = [r for r in incoming if config._url_path(r["address"]) not in known]
+    skipped = [r for r in incoming if config._url_path(r["address"]) in known]
+    errors = check_rows(existing + added, "pages.csv", False)
+    if errors:
+        raise UrlListError("\n".join(errors))
+    if added:
+        _append_rows(pages_path, added)
+    return added, skipped
+
+
+def _append_rows(path: Path, rows: List[Row]) -> None:
+    raw = path.read_bytes()
+    # The file's own line ending is kept so the git diff shows only the new rows.
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    with open(path, "a", newline="", encoding="utf-8") as handle:
+        if raw and not raw.endswith(b"\n"):
+            handle.write(newline)
+        writer = csv.writer(handle, lineterminator=newline)
+        for row in rows:
+            writer.writerow([row[c] for c in PAGE_COLUMNS])
+
+
 def _print_counts(pages: List[Row], pdfs: List[Row]) -> None:
     kept_pages = [r for r in pages if r["keep"] == "yes"]
     kept_pdfs = [r for r in pdfs if r["keep"] == "yes"]
@@ -160,13 +194,29 @@ def _print_counts(pages: List[Row], pdfs: List[Row]) -> None:
         print(f"  pages in {category}: {count}")
 
 
+def _run_append(source: Path) -> int:
+    try:
+        added, skipped = append_pages(source)
+    except (UrlListError, OSError) as error:
+        print(f"ERRORS:\n{error}")
+        return 1
+    for row in skipped:
+        print(f"already in pages.csv, skipped: {row['address']}")
+    print(f"added {len(added)} row(s) to pages.csv, skipped {len(skipped)}")
+    return 0
+
+
 def main(argv: List[str] = None) -> int:
     parser = argparse.ArgumentParser(description="Copy url_lists/*.csv into config.py.")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="validate the CSV files only")
     mode.add_argument("--write", action="store_true", help="validate, then rewrite config.py")
+    mode.add_argument("--append-from", type=Path, metavar="CSV",
+                      help="add new rows from a review CSV to pages.csv (config.py is not touched)")
     args = parser.parse_args(argv)
 
+    if args.append_from:
+        return _run_append(args.append_from)
     try:
         pages, pdfs = load_lists()
         _print_counts(pages, pdfs)
