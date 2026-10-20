@@ -7,7 +7,7 @@ feature is preserved alongside the code.
 
 ---
 
-## Folder Structure
+## Folder Structure!
 
 .claude/
 ├── specs/ # One spec per feature — the WHAT and WHY

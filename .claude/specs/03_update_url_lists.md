@@ -155,13 +155,3 @@ Before the session:
    - `test_page_furniture.py`: 2 FAIL lines in section 9 (the live corpus). They read the old data in `data/`, which is rebuilt in spec 08.
    - `test_ingest_safety.py`: 3 FAIL lines in section 7 ("the address survived", "the switchboard number survived", "the address still survives on the small path"). The cleaning code removes the address and phone from ordinary pages. This belongs to spec 06 (cleaning rules).
 
-In the session:
-4. New session → `/rename 03 update url lists`
-5. `git pull origin main`
-6. `git checkout -b feature/03-update-url-lists`
-7. Tell Claude: "Enter plan mode. Read `.claude/specs/03_update_url_lists.md`, `config.py`, `web_scraper.py`, `graph/Agents.py`, and `url_lists/pages.csv` and `pdfs.csv`. Save the plan to `.claude/plans/03_update_url_lists.md`."
-8. Read and approve the plan. Approve the Agents link table. Check each code edit.
-9. Run `--check`, then `--write` (Claude gives the exact commands).
-10. Run the two old tests again and compare. Run the link check. Do the human check.
-11. Tell Claude: "Commit only the allowed files, the new tools, tests, `url_lists/` and the plan file. Do not use `git add .`"
-12. Push → PR → merge. Then `git checkout main`, `git pull origin main`, delete the branch.
