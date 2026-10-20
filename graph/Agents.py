@@ -374,6 +374,19 @@ def _docs_by_source(kb: KnowledgeBase, url: str,
     return []
 
 
+def _is_faculty_source(source: str) -> bool:
+    """True if a stored `source` is a department page or the faculty list page.
+
+    Compared by path so a trailing slash does not matter. This replaced a
+    substring test for "/faculty", which dropped every page on the new site
+    layout (/academics/departments/<name>) while still passing news pages whose
+    slug happened to contain the word.
+    """
+    faculty_pages = {config._url_path(u) for u in config.DEPT_URLS.values()}
+    faculty_pages.add(config._url_path(config.FACULTY_LIST_PAGE))
+    return config._url_path(source) in faculty_pages
+
+
 # ── Named offices: where the page is, and what the post is called ────────────
 # These two tables are keyed identically on purpose. _OFFICE_URL says where the
 # office's page lives; _ROLE_FALLBACK_TERMS says how the post is written in
@@ -382,31 +395,10 @@ def _docs_by_source(kb: KnowledgeBase, url: str,
 #
 # They live at module scope rather than inside _get_faculty_docs_raw so a test
 # can import and assert against them without calling a 700-line function.
-_OFFICE_URL = {
-    # Office pages. Stored WITHOUT a trailing slash — see _docs_by_source,
-    # which matches either form so this table cannot silently empty again.
-    "controller":      "https://uoli.edu.pk/offices/controller-of-examination-office",
-    "exam control":    "https://uoli.edu.pk/offices/controller-of-examination-office",
-    "treasurer":       "https://uoli.edu.pk/office-of-treasurer",
-    "registrar":       "https://uoli.edu.pk/office-of-registrar",
-    "oric":            "https://uoli.edu.pk/oric",
-    # Not /offices/directorate-of-it. It was, and the lookup returned nothing.
-    "directorate":     "https://uoli.edu.pk/directorate-of-it",
-    "fao":             "https://uoli.edu.pk/offices/fao",
-    # ── Leadership pages ─────────────────────────────────────────────────
-    # "who is vc" → _leadership_count=1 → enters this loop → direct URL fetch
-    # returns vc-message chunks → grader sees them as PARTIAL → the model
-    # answers instead of returning a hard FALLBACK.
-    "vc":              "https://uoli.edu.pk/vc-message",
-    "vice chancellor": "https://uoli.edu.pk/vc-message",
-    "vice-chancellor": "https://uoli.edu.pk/vc-message",
-    "vicechanclor":    "https://uoli.edu.pk/vc-message",
-    "vise chancellor": "https://uoli.edu.pk/vc-message",
-    "voice chancellor":"https://uoli.edu.pk/vc-message",
-    "pro vc":          "https://uoli.edu.pk/pro-vc-message",
-    "pro-vc":          "https://uoli.edu.pk/pro-vc-message",
-    "dean":            "https://uoli.edu.pk/dean-message",
-}
+# Addresses live in config.OFFICE_URLS (one place for every link). Stored WITHOUT a
+# trailing slash — see _docs_by_source, which matches either form so this table
+# cannot silently empty again.
+_OFFICE_URL = config.OFFICE_URLS
 
 # How each post is spelled in the corpus, used by _role_name_probe when the
 # office page does not name the person holding it.
@@ -1086,23 +1078,7 @@ def _get_faculty_docs_raw(kb: KnowledgeBase, query: str,
     # _docs_by_source(), which matches either form, so a future change on the
     # ingest side cannot silently empty this map again — see that function for
     # the nine-question outage this replaces.
-    _DEPT_URL = {
-        "cs":               "https://uoli.edu.pk/faculty/computer-science",
-        "computer science": "https://uoli.edu.pk/faculty/computer-science",
-        "commerce":         "https://uoli.edu.pk/faculty/commerce",
-        "english":          "https://uoli.edu.pk/faculty/english",
-        "education":        "https://uoli.edu.pk/faculty/education",
-        "mathematics":      "https://uoli.edu.pk/faculty/mathematics",
-        "math":             "https://uoli.edu.pk/faculty/mathematics",
-        "pashto":           "https://uoli.edu.pk/faculty/pashto",
-        "zoology":          "https://uoli.edu.pk/faculty/zoology",
-        "islamic":          "https://uoli.edu.pk/faculty/islamic-studies",
-        "islamiyat":        "https://uoli.edu.pk/faculty/islamic-studies",
-        "political":        "https://uoli.edu.pk/faculty/political-science",
-        "management":       "https://uoli.edu.pk/faculty/management-sciences",
-        "allied":           "https://uoli.edu.pk/faculty/allied-health-sciences",
-        "health sciences":  "https://uoli.edu.pk/faculty/allied-health-sciences",
-    }
+    _DEPT_URL = config.DEPT_URLS
 
     _SPECIFIC_DEPT_WORDS = list(_DEPT_URL.keys())
     _has_specific_dept   = any(w in query_lower for w in _SPECIFIC_DEPT_WORDS)
@@ -1120,15 +1096,7 @@ def _get_faculty_docs_raw(kb: KnowledgeBase, query: str,
         "vise chancellor", "dean", "pro vc", "pro-vc",
         "registrar", "treasurer",
     ]
-    _LEADERSHIP_PAGES = [
-        "https://uoli.edu.pk/vc-message",
-        "https://uoli.edu.pk/dean-message",
-        "https://uoli.edu.pk/pro-vc-message",
-        "https://uoli.edu.pk/registrar-message",
-        "https://uoli.edu.pk/office-of-registrar",
-        "https://uoli.edu.pk/office-of-treasurer",
-        "https://uoli.edu.pk/about-us",
-    ]
+    _LEADERSHIP_PAGES = config.LEADERSHIP_PAGES
     _has_leadership_query = any(t in query_lower for t in _LEADERSHIP_QUERY_TERMS)
 
     if _has_specific_dept and _has_leadership_query:
@@ -1281,7 +1249,7 @@ def _get_faculty_docs_raw(kb: KnowledgeBase, query: str,
         # Drop news/event pages mistagged as faculty
         raw_children = [
             d for d in raw_children
-            if "/faculty" in d.metadata.get("source", "")
+            if _is_faculty_source(d.metadata.get("source", ""))
         ]
         if len(kb.parent_store) > 0:
             docs = kb._fetch_parents(raw_children)
@@ -1591,11 +1559,7 @@ def _get_faculty_docs_raw(kb: KnowledgeBase, query: str,
         # two entries below it happen to cover the same ground. scratch/
         # verify_stage1.py now fails on any URL here that resolves to no rows,
         # so the next dead link is caught before it reaches a user.
-        _contact_urls = [
-            "https://uoli.edu.pk/contact",
-            "https://uoli.edu.pk/contacts-old-new",
-            "https://uoli.edu.pk/",
-        ]
+        _contact_urls = config.CONTACT_PAGES
         contact_raw = []
         for _url in _contact_urls:
             contact_raw.extend(_docs_by_source(kb, _url))
@@ -2383,9 +2347,7 @@ def retrieve_for_agent(kb: KnowledgeBase, agent_name: str, query: str,
 
         if not docs:
             # Last resort: pull the known fee pages straight out of the store.
-            for url in ("https://uoli.edu.pk/university-apply",
-                        "https://uoli.edu.pk/admissions-open-fall-2026",
-                        "https://uoli.edu.pk/admission"):
+            for url in config.FEE_FALLBACK_PAGES:
                 result = kb.db.get(include=["documents", "metadatas"],
                                    where={"source": {"$eq": url}})
                 docs.extend(
