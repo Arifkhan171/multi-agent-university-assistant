@@ -669,7 +669,7 @@ def main():
     # ── CHANGE 1: Added --url flag ────────────────────────────
     parser.add_argument(
         "--url", type=str, default=None,
-        help="Scrape and re-index a single URL only (e.g. --url https://uoli.edu.pk/vc-message)"
+        help="Scrape and re-index a single URL only (e.g. --url https://uoli.edu.pk/about/vc-message)"
     )
     # ─────────────────────────────────────────────────────────
     args = parser.parse_args()

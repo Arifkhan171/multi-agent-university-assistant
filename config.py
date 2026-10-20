@@ -223,152 +223,247 @@ CHECKPOINT_DB = "./data/checkpoints.db"
 # Where a page's live category was already scoring well it is preserved and the
 # reason recorded; the four categories this list used to invent ("students",
 # "courses", "fees", "downloads") are gone because no agent ever read them.
+# Three pages keep a category that the CSV cannot explain, so the reasons live
+# here, next to the list, and not in the generated block:
+#
+# Homepage: deliberately "general", NOT "overview". Its text is the welcome
+# blurb, the statistics strip and the News & Events listing — verb-rich
+# generic prose that the CrossEncoder scores highly on almost any query.
+# "general" is read by the admissions, fees and campus profiles but NOT by
+# the faculty profile, which keeps that prose out of "who is the HOD of X"
+# retrieval. Promoting it to "overview" would expose it to the faculty path.
+#
+# The contact page stays "general" for the same reason as the homepage: its
+# content IS the address/phone/email block, and "overview" would feed that
+# block into faculty retrieval, where it was measured at rank 0 for "Who is
+# the Registrar?" before BOILERPLATE_PENALTY was added.
+#
+# The registrar page is kept as "overview", not "offices", although it is
+# plainly an office page. The faculty profile reads both, so faculty questions
+# are unaffected either way; but "offices" is NOT in the admissions profile, so
+# moving it there would remove the registrar's registration/records content
+# from admissions retrieval. Q3 ("Who is the Registrar?") currently returns its
+# answer at rank 1 with this assignment. Change it only behind a bench_retrieval
+# run.
+#
+# PDFs: the CSV marks the 6 Proforma PDFs keep = no (the site answers 403 even
+# in a browser), so they are not listed below.
+
+# BEGIN URL LISTS
+# Made by tools/build_url_lists.py from url_lists/pages.csv and pdfs.csv.
+# Do not edit by hand: change the CSV and run the tool again.
 UNIVERSITY_PAGES = [
-
-    # ── MAIN ────────────────────────────────────────────────
-    # Homepage: deliberately "general", NOT "overview". Its text is the welcome
-    # blurb, the statistics strip and the News & Events listing — verb-rich
-    # generic prose that the CrossEncoder scores highly on almost any query.
-    # "general" is read by the admissions, fees and campus profiles but NOT by
-    # the faculty profile, which keeps that prose out of "who is the HOD of X"
-    # retrieval. Promoting it to "overview" would expose it to the faculty path.
-    {"url": "https://uoli.edu.pk/",               "category": "general"},
-    {"url": "https://uoli.edu.pk/about-us/",      "category": "overview"},
-    {"url": "https://uoli.edu.pk/vc-message/",    "category": "overview"},
-    {"url": "https://uoli.edu.pk/pro-vc-message/","category": "overview"},  # ← found during scrape
-    {"url": "https://uoli.edu.pk/registrar-message/", "category": "overview"},  # ← found during scrape
-    {"url": "https://uoli.edu.pk/dean-message/",  "category": "overview"},  # ← found during scrape
-    # The contact page stays "general" for the same reason as the homepage: its
-    # content IS the address/phone/email block, and "overview" would feed that
-    # block into faculty retrieval, where it was measured at rank 0 for "Who is
-    # the Registrar?" before BOILERPLATE_PENALTY was added.
-    {"url": "https://uoli.edu.pk/contact/",       "category": "general"},
-
-    # ── STUDENTS ────────────────────────────────────────────
-    # Student-life page. Was declared "students", which no agent reads.
-    {"url": "https://uoli.edu.pk/overview/",         "category": "general"},
-    {"url": "https://uoli.edu.pk/admission/",         "category": "admissions"},
-    # Program lists. Were declared "courses" (unread) and were actually stored as
-    # "policy" (read only by the policy agent), so "what programs does UoL offer"
-    # could not reach them from the admissions path. This is the fix.
-    {"url": "https://uoli.edu.pk/undergraduate/",     "category": "admissions"},
-    {"url": "https://uoli.edu.pk/graduate-programs/", "category": "admissions"},
-    # Was declared "fees", which no agent reads — the fees profile reads
-    # ["admissions", "overview", "general", "offices"]. Filed under "admissions"
-    # so both the fees and admissions agents can retrieve it.
-    {"url": "https://uoli.edu.pk/fee-structure/",     "category": "admissions"},
-    {"url": "https://uoli.edu.pk/library/",           "category": "general"},
-    {"url": "https://uoli.edu.pk/bus-routes/",        "category": "general"},
-    {"url": "https://uoli.edu.pk/alumni/",            "category": "general"},
-
-    # ── DEPARTMENTS / FACULTIES ─────────────────────────────
-    {"url": "https://uoli.edu.pk/faculty/",                         "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/allied-health-sciences/",  "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/commerce/",                "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/computer-science/",        "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/education/",               "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/english/",                 "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/islamic-studies/",         "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/management-sciences/",     "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/mathematics/",             "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/pashto/",                  "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/political-science/",       "category": "faculty"},
-    {"url": "https://uoli.edu.pk/faculty/zoology/",                 "category": "faculty"},
-
-    # ── OFFICES ─────────────────────────────────────────────
-    {"url": "https://uoli.edu.pk/offices/",                                    "category": "offices"},
-    # Kept as "overview", not "offices", although it is plainly an office page.
-    # The faculty profile reads both, so faculty questions are unaffected either
-    # way; but "offices" is NOT in the admissions profile, so moving it there
-    # would remove the registrar's registration/records content from admissions
-    # retrieval. Q3 ("Who is the Registrar?") currently returns its answer at
-    # rank 1 with this assignment. Change it only behind a bench_retrieval run.
-    {"url": "https://uoli.edu.pk/office-of-registrar/",                        "category": "overview"},
-    {"url": "https://uoli.edu.pk/office-of-treasurer/",                        "category": "offices"},
-    {"url": "https://uoli.edu.pk/offices/directorate-of-it/",                  "category": "offices"},
-    {"url": "https://uoli.edu.pk/offices/controller-of-examination-office/",   "category": "offices"},
-    {"url": "https://uoli.edu.pk/oric/",                                       "category": "offices"},
-    {"url": "https://uoli.edu.pk/dqe/",                                        "category": "offices"},
-    {"url": "https://uoli.edu.pk/offices/fao/",                                "category": "offices"},
-    {"url": "https://uoli.edu.pk/directorate-of-postgraduate-studies/",        "category": "offices"},
-
-    # ── DOWNLOADS (text description — PDFs handled via PDF_SOURCES) ──
-    # The page itself is a list of document titles and links; the documents
-    # themselves are ingested separately as "policy" via PDF_SOURCES. Was
-    # declared "downloads", which no agent reads.
-    {"url": "https://uoli.edu.pk/downloads/", "category": "general"},
+    {"url": 'https://uoli.edu.pk', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/admissions', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/admissions/how-to-apply', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/admissions/eligibility', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/admissions/fees', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/admissions/faq', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/academics/undergraduate', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/graduate', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/departments', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/faculty', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/programs', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/about', "category": 'overview'},
+    {"url": 'https://uoli.edu.pk/about/vc-message', "category": 'overview'},
+    {"url": 'https://uoli.edu.pk/about/leadership', "category": 'overview'},
+    {"url": 'https://uoli.edu.pk/campus-life', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/hostels', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/facilities', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/student-affairs', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/research', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/research/oric', "category": 'offices'},
+    {"url": 'https://uoli.edu.pk/services/library', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/services/scholarships', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/offices', "category": 'offices'},
+    {"url": 'https://uoli.edu.pk/contact', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bscs', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-commerce', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-english', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-math', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/news/first-meeting-board-of-studies-department-of-economics-university-of-loralai', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/strengthening-academic-partnerships-for-quality-teacher-education-mou-signed', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/research/innovation/events/financial-literacy-for-startups-business-incubation-program-cohort-1', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/admissions-open-fall-2026-phase-ii-university-of-loralai', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/privacy-policy', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/academics/programs/dpt', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-anesthesia', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-optometry', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bba', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bba-2-5', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-economics', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-political', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-islamic', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-zoology', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bed-honors', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-pashto', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/ms-management', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/ms-education', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/programs/phd-education', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/academics/departments/management-sciences', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/departments/commerce', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/departments/computer-science', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/departments/education', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/departments/allied-health-sciences', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/departments/english', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/departments/islamic-studies', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/departments/mathematics', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/departments/pashto', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/departments/political-science', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/departments/zoology', "category": 'faculty'},
+    {"url": 'https://uoli.edu.pk/academics/programs/bs-education', "category": 'admissions'},
+    {"url": 'https://uoli.edu.pk/about/pro-vc-message', "category": 'overview'},
+    {"url": 'https://uoli.edu.pk/about/registrar-message', "category": 'overview'},
+    {"url": 'https://uoli.edu.pk/campus-life/clinic', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/sports-week-2026', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/sports-week-2026-day1', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/pcb-talent-hunt-inter-school', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/pm-talent-hunt-table-tennis-sibi', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/research/innovation', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/services', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-bos-economics-bs-data-science', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-mou-district-education-office-loralai', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-financial-literacy-for-startups-coe', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-admissions-open-fall-2026-phase-2', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-tikka-olive-oil-unit', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-0', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-1', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-2', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-3', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-4', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-5', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-6', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-7', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-8', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-9', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-10', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-11', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/news/news-12', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/offices/postgraduate-studies', "category": 'offices'},
+    {"url": 'https://uoli.edu.pk/offices/registrar', "category": 'overview'},
+    {"url": 'https://uoli.edu.pk/offices/treasurer', "category": 'offices'},
+    {"url": 'https://uoli.edu.pk/offices/directorate-of-it', "category": 'offices'},
+    {"url": 'https://uoli.edu.pk/offices/controller-examination', "category": 'offices'},
+    {"url": 'https://uoli.edu.pk/offices/oric', "category": 'offices'},
+    {"url": 'https://uoli.edu.pk/offices/dqe', "category": 'offices'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/hec-inter-varsity-football-khuzdar', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/annual-sports-week-2024', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/pm-talent-hunt-table-tennis-2023', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/nab-cricket-tournament', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/future-star-cricket-tournament', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/annual-sports-week-2018', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/cm-inter-universities-festival', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/annual-vc-sports-week-2026', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/campus-life/sports/events/hec-inter-varsity-cricket-qualifiers', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/services/career-counselling', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/services/student-resources', "category": 'general'},
+    {"url": 'https://uoli.edu.pk/about/dean-message', "category": 'overview'},
+    {"url": 'https://uoli.edu.pk/about/vision-mission', "category": 'overview'},
 ]
 
-# ── PDF / DOCX Sources ────────────────────────────────────────
-# Policy documents available as PDFs on the UOLI downloads page.
-# These are downloaded at setup time and loaded into the KB.
-# If you have local .docx copies, place them in data/docs/ instead.
 PDF_SOURCES = [
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2025/12/UOL-Notification-of-Under-Graduate-Rules.pdf",
-        "category": "policy",
-        "label":    "UOL Undergraduate Rules",
-    },
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2025/12/UOL-Notification-of-Graduate-Rules.pdf",
-        "category": "policy",
-        "label":    "UOL Graduate Rules",
-    },
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2025/12/UOL-Notificaion-of-Disciplinary-Rules.pdf",
-        "category": "policy",
-        "label":    "UOL Disciplinary Rules",
-    },
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2025/12/The-Balochistan-Universities-Act-2022.pdf",
-        "category": "policy",
-        "label":    "Balochistan Universities Act 2022",
-    },
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2025/12/HEC_Policy_on_Sexual_Harassment.pdf",
-        "category": "policy",
-        "label":    "HEC Sexual Harassment Policy",
-    },
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2025/12/Anti-Drug-Policy-For-Higher-Education-Institutions-In-Pakistan.pdf",
-        "category": "policy",
-        "label":    "Anti-Drug Policy",
-    },
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2025/12/UOL-Notification-of-ED-Rules.pdf",
-        "category": "policy",
-        "label":    "UOLi E&D Rules",  # found on homepage, was missing from original list
-    },
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2025/12/Act-2016-Balochistan-Protection-Against-Harassment-of-Women.pdf",
-        "category": "policy",
-        "label":    "BPAS Anti-Harassment Policy",  # found on homepage, was missing
-    },
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2025/12/UOL-Notification-of-Conduct-Rules.pdf",
-        "category": "policy",
-        "label":    "UOLi Conduct Rules",  # found on homepage, was missing
-    },
-    # ── Crawler-missed PDFs (from pdf_skipped.md entries 10–12) ─────────────
-    # These URLs were NOT reached by the crawler because their source pages
-    # were either empty or the link was dead during the crawl. Adding them
-    # to PDF_SOURCES forces a direct download attempt at next setup run.
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2026/07/Advertisement-for-Visiting-Faculty.pdf",
-        "category": "faculty",
-        "label":    "Advertisement for Visiting Faculty 2026",
-    },
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2026/07/Bidding-Document-Report-05-07-2026.pdf",
-        "category": "general",
-        "label":    "Bidding Document Report July 2026",
-    },
-    {
-        "url":      "https://uoli.edu.pk/wp-content/uploads/2026/07/NIT-Report.pdf",
-        "category": "general",
-        "label":    "Notice Inviting Tender (NIT) Report 2026",
-    },
+    {"url": 'https://uoli.edu.pk/Docs/Admission-Form-University-of-Loralai.pdf', "category": 'admissions', "label": 'Admission Form University of Loralai'},
+    {"url": 'https://uoli.edu.pk/Docs/HEC_Policy_on_Sexual_Harassment.pdf', "category": 'policy', "label": 'HEC Anti-Harassment Policy'},
+    {"url": 'https://uoli.edu.pk/Docs/Harassment-Act-2010.pdf', "category": 'policy', "label": 'Harassment Act 2010'},
+    {"url": 'https://uoli.edu.pk/Docs/Act-2016-Balochistan-Protection-Against-Harassment-of-Women.pdf', "category": 'policy', "label": 'BPAS Protection Act'},
+    {"url": 'https://uoli.edu.pk/Docs/Anti-Drug-Policy-For-Higher-Education-Institutions-In-Pakistan.pdf', "category": 'policy', "label": 'HEC Anti-Drug Policy'},
+    {"url": 'https://uoli.edu.pk/Docs/UOL-Notification-of-Under-Graduate-Rules.pdf', "category": 'policy', "label": 'Undergraduate Rules'},
+    {"url": 'https://uoli.edu.pk/Docs/UOL-Notification-of-Graduate-Rules.pdf', "category": 'policy', "label": 'Graduate Regulations'},
+    {"url": 'https://uoli.edu.pk/Docs/Graduate-Education-Policy.pdf', "category": 'policy', "label": 'HEC Graduate Edu Policy'},
+    {"url": 'https://uoli.edu.pk/Docs/Notification%20of%20Service%20Rules.pdf', "category": 'policy', "label": 'Service Rules Notification'},
+    {"url": 'https://uoli.edu.pk/Docs/UOL-Notification-of-Conduct-Rules.pdf', "category": 'policy', "label": 'Conduct Rules'},
+    {"url": 'https://uoli.edu.pk/Docs/UOL-Notificaion-of-Disciplinary-Rules.pdf', "category": 'policy', "label": 'Disciplinary Rules'},
+    {"url": 'https://uoli.edu.pk/Docs/UOL-Notification-of-E&D-Rules.pdf', "category": 'policy', "label": 'E&D Rules'},
 ]
+# END URL LISTS
+
+# ── Links that graph/Agents.py looks up by exact address ─────────────────────
+# These used to be typed inside Agents.py. They live here so one file knows every
+# address, and tests/test_build_url_lists.py proves each one is in the page list
+# above — a link to a page that is not ingested returns zero rows, silently.
+# Stored without a trailing slash; Agents._docs_by_source matches either form.
+_SITE = "https://uoli.edu.pk"
+
+
+def _site(path: str) -> str:
+    return _SITE + path
+
+
+# Where each named post's page lives. Keyed like Agents._ROLE_FALLBACK_TERMS.
+OFFICE_URLS = {
+    "controller":      _site("/offices/controller-examination"),
+    "exam control":    _site("/offices/controller-examination"),
+    "treasurer":       _site("/offices/treasurer"),
+    "registrar":       _site("/offices/registrar"),
+    "oric":            _site("/offices/oric"),
+    "directorate":     _site("/offices/directorate-of-it"),
+    # No separate FAO page: it is a section of the scholarships page.
+    "fao":             _site("/services/scholarships"),
+    # Leadership messages: "who is vc" enters the direct URL fetch with these.
+    "vc":              _site("/about/vc-message"),
+    "vice chancellor": _site("/about/vc-message"),
+    "vice-chancellor": _site("/about/vc-message"),
+    "vicechanclor":    _site("/about/vc-message"),
+    "vise chancellor": _site("/about/vc-message"),
+    "voice chancellor": _site("/about/vc-message"),
+    "pro vc":          _site("/about/pro-vc-message"),
+    "pro-vc":          _site("/about/pro-vc-message"),
+    "dean":            _site("/about/dean-message"),
+}
+
+_DEPARTMENTS = "/academics/departments/"
+
+# Department keyword in a question -> that department's page.
+DEPT_URLS = {
+    "cs":               _site(_DEPARTMENTS + "computer-science"),
+    "computer science": _site(_DEPARTMENTS + "computer-science"),
+    "commerce":         _site(_DEPARTMENTS + "commerce"),
+    "english":          _site(_DEPARTMENTS + "english"),
+    "education":        _site(_DEPARTMENTS + "education"),
+    "mathematics":      _site(_DEPARTMENTS + "mathematics"),
+    "math":             _site(_DEPARTMENTS + "mathematics"),
+    "pashto":           _site(_DEPARTMENTS + "pashto"),
+    "zoology":          _site(_DEPARTMENTS + "zoology"),
+    "islamic":          _site(_DEPARTMENTS + "islamic-studies"),
+    "islamiyat":        _site(_DEPARTMENTS + "islamic-studies"),
+    "political":        _site(_DEPARTMENTS + "political-science"),
+    "management":       _site(_DEPARTMENTS + "management-sciences"),
+    "allied":           _site(_DEPARTMENTS + "allied-health-sciences"),
+    "health sciences":  _site(_DEPARTMENTS + "allied-health-sciences"),
+}
+
+# The page that lists all faculty members. Together with DEPT_URLS it is the set
+# of sources that count as faculty pages (Agents._is_faculty_source).
+FACULTY_LIST_PAGE = _site("/academics/faculty")
+
+# Fetched together when a question names a leadership role and a department.
+LEADERSHIP_PAGES = [
+    _site("/about/vc-message"),
+    _site("/about/dean-message"),
+    _site("/about/pro-vc-message"),
+    _site("/about/registrar-message"),
+    _site("/offices/registrar"),
+    _site("/offices/treasurer"),
+    _site("/about"),
+]
+
+# Main-contact questions read these pages first.
+CONTACT_PAGES = [
+    _site("/contact"),
+    _site(""),
+]
+
+# Last-resort pages for a fee question that retrieved nothing.
+FEE_FALLBACK_PAGES = [
+    _site("/admissions/how-to-apply"),
+    _site("/admissions/fees"),
+    _site("/admissions"),
+]
+
 
 # How often to auto-scrape the website (hours between each scrape)
 # Set to 0 to disable automatic scraping
@@ -538,6 +633,17 @@ def _structural_category(segs):
     # Registrar?" — see the /contact/ note in UNIVERSITY_PAGES.
     if (_CONTACT_TOKENS & ftokset) or (_CONTACT_TOKENS & ltokset):
         return "general"
+
+    # New site layout. These only decide pages that are NOT declared in
+    # UNIVERSITY_PAGES, such as a department or program added after the CSV was
+    # made; a declared page keeps the category its CSV row gives it.
+    if first == "academics" and len(segs) >= 2:
+        if segs[1] in ("departments", "faculty"):
+            return "faculty"
+        if segs[1] in ("programs", "undergraduate", "graduate"):
+            return "admissions"
+    if first == "research" and len(segs) >= 2 and segs[1] == "oric":
+        return "offices"
 
     # Faculty and department pages, including any department added in future:
     # /faculty/<anything> matches on the first segment alone.
