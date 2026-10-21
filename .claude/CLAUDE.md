@@ -165,8 +165,8 @@ python eval_ragas.py --test             # 5-question smoke test
 python eval_ragas.py --ragas            # RAGAS scoring only on existing checkpoint
 
 # ── Tests — HUMAN RUNS THESE, NOT CLAUDE ──────────────────────
-python -m pytest test_page_furniture.py -v
-python -m pytest test_ingest_safety.py -v
+python test_page_furniture.py
+python test_ingest_safety.py
 
 # ── Rebuild knowledge base — HUMAN RUNS THIS, NOT CLAUDE ──────
 python setup_knowledge_base.py --force  # WARNING: deletes and rebuilds ChromaDB from scratch

@@ -443,6 +443,12 @@ def _detect_category(filename: str) -> str:
     return config.FALLBACK_CATEGORY
 
 
+def _print_new_links(results: dict) -> None:
+    """One line per new header/footer/menu item, so the owner can update the page list."""
+    for item in results.get("new_links", []):
+        print(f"    NEW: {item}")
+
+
 def step1_scrape_website(kb: KnowledgeBase) -> dict:
     """
     Full-coverage UOLI website scraper.
@@ -469,7 +475,8 @@ def step1_scrape_website(kb: KnowledgeBase) -> dict:
     # --- Phase A: Guaranteed Static Pages ---
     print("  Phase A: Scraping all guaranteed university pages...")
     results_a = scrape_all_pages(kb, urls=GUARANTEED_PAGES)
-    print(f"  Phase A done — New: {results_a['scraped']}, Skipped: {results_a.get('skipped',0)}, Empty: {results_a.get('empty',0)}, Failed: {results_a['failed']}")
+    print(f"  Phase A done — New: {results_a['scraped']}, Skipped: {results_a.get('skipped',0)}, Empty: {results_a.get('empty',0)}, Failed: {results_a['failed']}, Notes: {results_a.get('notes',0)}")
+    _print_new_links(results_a)
     print()
 
     # --- Phase B: Auto-Crawler (finds pages we missed) ---
@@ -504,7 +511,8 @@ def step1_scrape_website(kb: KnowledgeBase) -> dict:
         # pages, leaving the corpus clean or dirty depending on which phase
         # happened to ingest a page.
         results_b = scrape_all_pages(kb, urls=extra_urls, include_guaranteed=False)
-        print(f"  Phase B done — New: {results_b['scraped']}, Skipped: {results_b.get('skipped',0)}, Failed: {results_b['failed']}")
+        print(f"  Phase B done — New: {results_b['scraped']}, Skipped: {results_b.get('skipped',0)}, Failed: {results_b['failed']}, Notes: {results_b.get('notes',0)}")
+        _print_new_links(results_b)
         summary["scraped"] = results_a["scraped"] + results_b["scraped"]
         summary["failed"]  = results_a["failed"]  + results_b["failed"]
         summary["skipped"] = results_a.get("skipped", 0) + results_b.get("skipped", 0)

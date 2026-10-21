@@ -39,6 +39,7 @@ import logging
 import hashlib
 import importlib.util
 import concurrent.futures
+from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
@@ -863,6 +864,92 @@ def _remove_course_area(main, base_url: str = "") -> None:
     area.decompose()
 
 
+_LINK_LEFTOVER_STARTS = (
+    "back to", "read article", "read more", "view all", "view details",
+    "see more", "see all", "learn more",
+)
+_DOCUMENT_EXTENSIONS = (".pdf", ".doc", ".docx", ".xls", ".xlsx")
+# A line longer than this that is only a link address is still kept, but logged,
+# so a tracking address pasted into a page can be noticed.
+_LONG_ADDRESS = 200
+
+
+def _remove_link_leftovers(main) -> None:
+    """Delete links and buttons that are only navigation words ("Back to About UOLI").
+
+    The test is on the HTML element, not on a line of text, so a sentence in a
+    paragraph that starts with "See more" is kept. A news card is one big link
+    whose "Read Article" label is a small span inside it, so a short span or box
+    that sits inside a link is judged the same way.
+    """
+    for tag in main.find_all(["a", "button", "span", "div"]):
+        if tag.parent is None:
+            continue
+        if tag.name in ("span", "div") and tag.find_parent("a") is None:
+            continue
+        words = tag.get_text(" ", strip=True)
+        if words and len(words) <= 40 and words.lower().startswith(_LINK_LEFTOVER_STARTS):
+            tag.decompose()
+
+
+def _encode_spaces(address: str) -> str:
+    """Write each space of a link address as %20. A space ends the link in a chat
+    message, so "Notification of Service Rules.pdf" would break; an address that
+    already has %20 has no space left and stays as it is."""
+    return address.strip().replace(" ", "%20")
+
+
+def _is_uoli_host(host: str) -> bool:
+    site = urlparse(config.HOME_URL).netloc.lower()
+    return host == site or host.endswith("." + site)
+
+
+def _link_value(words: str, href: str, base_url: str) -> str:
+    """The address worth keeping for one link, or "" when the words are enough."""
+    lowered = href.lower()
+    if lowered.startswith("mailto:"):
+        value = href[7:].split("?", 1)[0].strip()
+        return "" if not value or value.lower() in words.lower() else value
+    if lowered.startswith("tel:"):
+        value = href[4:].strip()
+        have = re.sub(r"\D", "", words)
+        want = re.sub(r"\D", "", value)
+        return "" if not want or (have and want.endswith(have.lstrip("0"))) or want in have else value
+    if not lowered.startswith(("http://", "https://", "/")) and not lowered.endswith(_DOCUMENT_EXTENSIONS):
+        return ""
+    full = _encode_spaces(urljoin(base_url, href) if base_url else href)
+    is_document = urlparse(full).path.lower().endswith(_DOCUMENT_EXTENSIONS)
+    host = urlparse(full).netloc.lower()
+    # Other UOLI pages are listed by the page directory, not inline.
+    if host and _is_uoli_host(host) and not is_document:
+        return ""
+    return full if (host or is_document) else ""
+
+
+def _inline_link_addresses(main, base_url: str = "") -> set:
+    """Write each worthwhile link as "words (address)" and return the addresses kept.
+
+    Outside links, documents, emails and phone numbers are facts a student asks
+    for ("give me the link to apply online"). A link with no address (a button run
+    by JavaScript) has nothing to keep.
+    """
+    kept = set()
+    for tag in main.find_all("a", href=True):
+        href = tag["href"].strip()
+        if not href or href.startswith(("#", "javascript:")):
+            continue
+        words = tag.get_text(" ", strip=True)
+        value = _link_value(words, href, base_url)
+        if not value:
+            continue
+        kept.add(value)
+        same = words.lower().rstrip("/") == value.lower().rstrip("/")
+        tag.replace_with(value if (same or not words) else f"{words} ({value})")
+        if len(value) > _LONG_ADDRESS:
+            logger.info(f"long link address kept on {base_url}: {value[:80]}...")
+    return kept
+
+
 def _is_empty_page(soup: BeautifulSoup) -> bool:
     """True if the page has no content of its own.
 
@@ -971,6 +1058,9 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
     # because their "Profile" buttons are already gone.
     _remove_course_area(main, base_url)
     _remove_filter_bars(main, base_url)
+    _remove_link_leftovers(main)
+    # Before the table step, so a link inside a table cell keeps its address.
+    kept_addresses = _inline_link_addresses(main, base_url)
 
     # Stage 3: Add markdown markers for headings, paragraphs, lists
     for tag in main.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
@@ -1029,7 +1119,7 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
         is_stat_number = bool(re.match(r'^\d+[%+]?$', line))
         if len(line) < 3 and line_lower not in IMPORTANT_SHORT and not is_stat_number:
             continue
-        if line.startswith("http") and " " not in line:
+        if line.startswith("http") and " " not in line and line not in kept_addresses:
             continue
         if re.search(r"[\{\};]", line) and len(line.split()) < 6:
             continue
@@ -1277,6 +1367,230 @@ def _pdf_category(pdf_url: str, referrers: set):
     return config.resolve_pdf_category(pdf_url, referrers)
 
 
+# ── Site-wide information (header and footer) ──────────────────────────────
+#
+# Spec 05 reads only main#main-content, so the header and footer are no longer
+# repeated on every page. They still hold facts a student asks for (portal links,
+# social pages, the contact block, the rules documents), so they are read once per
+# page here, before anything is removed, and turned into one note.
+_SOCIAL_DOMAINS = {
+    "facebook.com": "Facebook", "instagram.com": "Instagram",
+    "linkedin.com": "LinkedIn", "youtube.com": "YouTube", "youtu.be": "YouTube",
+    "twitter.com": "Twitter", "x.com": "X",
+}
+_PHONE_RE = re.compile(r"\+?\d[\d\s()\-]{7,}\d")
+_EMAIL_RE = re.compile(r"[\w.+\-]+@[\w\-]+\.[\w.]+")
+_DOMAIN_RE = re.compile(r"[\w\-]+\.(?:edu|com|org|net|pk)(?:\.\w+)?", re.I)
+_CHAT_WIDGET_WORDS = ("uoli ai assistant", "ask me anytime")
+
+# Last good header/footer facts of the home page, so a run without a home page
+# still has a note to store.
+SITE_NOTE_CACHE = "./data/site_note.json"
+
+# Filled by fetch_page for every page, cleared by scrape_all_pages. Same idea as
+# _PDF_REFERRERS: the facts are read from the HTML before it is cut down.
+_SITE_INFO: dict[str, dict] = {}
+
+
+def reset_site_info() -> None:
+    _SITE_INFO.clear()
+
+
+def _address_key(address: str) -> str:
+    return address.strip().lower().rstrip("/")
+
+
+def _social_name(host: str) -> str:
+    for domain, name in _SOCIAL_DOMAINS.items():
+        if host == domain or host.endswith("." + domain):
+            return name
+    return ""
+
+
+def _link_words(tag) -> str:
+    """The best words of a link. A link that holds a phone and a desktop copy of
+    its label ("Online Admissions" / "Admissions") yields the longest piece."""
+    pieces = [p for p in tag.get_text("\n", strip=True).split("\n") if p]
+    if pieces:
+        return max(pieces, key=len)
+    return (tag.get("aria-label") or tag.get("title") or "").strip()
+
+
+def _remove_credit_boxes(root) -> None:
+    """Delete the "Developed by" credit: the smallest box that holds the words and
+    an outside link. It is about the web developer, not the university."""
+    for text in root.find_all(string=re.compile(r"developed by", re.I)):
+        box = text.parent
+        while box is not None and box is not root:
+            outside = [a for a in box.find_all("a", href=True)
+                       if a["href"].startswith("http")
+                       and not _is_uoli_host(urlparse(a["href"]).netloc.lower())]
+            if outside:
+                box.decompose()
+                break
+            box = box.parent
+
+
+def _is_own_share_link(href: str, base_url: str) -> bool:
+    lowered = href.lower()
+    return "sharer" in lowered or "/share" in lowered or (
+        bool(base_url) and base_url.rstrip("/").lower() in lowered)
+
+
+def _sort_link(tag, base_url: str, info: dict, seen: set) -> None:
+    href = (tag.get("href") or "").strip()
+    if not href or href.startswith(("#", "javascript:")):
+        return
+    if href.lower().startswith(("tel:", "mailto:")):
+        value = href.split(":", 1)[1].split("?", 1)[0].strip()
+        if value:
+            info["contact"].append(value)
+        return
+    full = _encode_spaces(urljoin(base_url, href) if base_url else href)
+    parsed = urlparse(full)
+    host = parsed.netloc.lower()
+    is_document = parsed.path.lower().endswith(_DOCUMENT_EXTENSIONS)
+    if host and _is_uoli_host(host) and not is_document:
+        if parsed.path in ("", "/"):
+            # The logo link: its words carry the charter line, not a menu label.
+            info["other"].extend(p for p in tag.get_text("\n", strip=True).split("\n") if p)
+        else:
+            info["pages"].append(full)
+        return
+    key = _address_key(full)
+    if key in seen:
+        return
+    seen.add(key)
+    words = _link_words(tag)
+    social = _social_name(host)
+    if social:
+        if not _is_own_share_link(full, base_url):
+            info["social"].append((social, full))
+    elif is_document:
+        info["pdfs"].append((words or parsed.path.rsplit("/", 1)[-1], full))
+    else:
+        info["portals"].append((words or host, full))
+
+
+def _loose_lines(root) -> list:
+    """Text left in a header or footer once its links, buttons and headings are gone."""
+    for tag in root.find_all(["a", "button", "h1", "h2", "h3", "h4", "h5", "h6", "img"]):
+        tag.decompose()
+    lines = []
+    for line in root.get_text("\n", strip=True).split("\n"):
+        line = line.strip()
+        lowered = line.lower()
+        if not re.search(r"[A-Za-z0-9]", line) or lowered.startswith(("©", "skip to main")):
+            continue
+        if any(word in lowered for word in _CHAT_WIDGET_WORDS):
+            continue
+        lines.append(line)
+    return lines
+
+
+def extract_site_info(soup: BeautifulSoup, base_url: str = "") -> dict:
+    """The useful facts of a page's header, menu and footer, sorted by kind.
+
+    Works on a copy, so the caller's soup is untouched. Returns
+    {"social": [(name, url)], "portals": [(words, url)], "contact": [line],
+     "pdfs": [(words, url)], "other": [line], "pages": [url]}.
+    """
+    work = BeautifulSoup(str(soup), "html.parser")
+    for tag in work(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+    main = work.select_one("main#main-content")
+    info = {"social": [], "portals": [], "contact": [], "pdfs": [], "other": [], "pages": []}
+    seen: set = set()
+    roots = []
+    for tag in work.find_all(["header", "nav", "footer"]):
+        if (main is not None and main in tag.parents) or any(r in tag.parents for r in roots):
+            continue
+        roots.append(tag)
+    for root in roots:
+        _remove_credit_boxes(root)
+        for link in root.find_all("a"):
+            _sort_link(link, base_url, info, seen)
+        for line in _loose_lines(root):
+            has_fact = page_furniture.looks_like_contact_fact(line, config.UNIVERSITY_NAME)
+            info["contact" if has_fact else "other"].append(line)
+    info["pages"] = list(dict.fromkeys(info["pages"]))
+    return info
+
+
+def _contact_label(line: str) -> str:
+    text = line.strip()
+    if _EMAIL_RE.search(text):
+        return "Email"
+    if _PHONE_RE.fullmatch(text):
+        return "Phone"
+    if _DOMAIN_RE.fullmatch(text):
+        return "Website"
+    return "Address"
+
+
+def _note_sections(info: dict) -> list:
+    """(section title, [lines]) pairs, each contact fact once."""
+    contact, seen_contact = [], set()
+    for line in info.get("contact", []):
+        label = _contact_label(line)
+        key = re.sub(r"\D", "", line) if label == "Phone" else line.lower()
+        if key and key not in seen_contact:
+            seen_contact.add(key)
+            contact.append(f"{label}: {line}")
+    other = [l for l in dict.fromkeys(info.get("other", []))
+             if l.lower() not in config.UNIVERSITY_NAME.lower()]
+    return [
+        ("Official social media pages", [f"{n}: {u}" for n, u in info.get("social", [])]),
+        ("Portals and services", [f"{w}: {u}" for w, u in info.get("portals", [])]),
+        ("Contact", contact),
+        ("Rules, policies and forms", [f"{w}: {u}" for w, u in info.get("pdfs", [])]),
+        ("About the university", other),
+    ]
+
+
+def build_site_note(info: dict) -> str:
+    """One fact per line under short section titles; empty when nothing was found."""
+    out, seen = [], set()
+    for title, items in _note_sections(info):
+        fresh = [i for i in items if i.lower() not in seen]
+        seen.update(i.lower() for i in fresh)
+        if fresh:
+            out.extend(["", f"{title}:"] + fresh)
+    if not out:
+        return ""
+    return f"{config.UNIVERSITY_NAME} — official links and contacts\n" + "\n".join(out[1:])
+
+
+def _page_title(text: str, address: str) -> str:
+    """The first heading with words in it; else the page's short first line (spec 05
+    keeps the title as the first line); else the last part of the address."""
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    for line in lines:
+        if line.startswith("#") and line.lstrip("# ").strip():
+            return line.lstrip("# ").strip()
+    if lines and len(lines[0]) <= 80 and not lines[0].startswith(("|", "•")):
+        return lines[0]
+    return config._url_path(address).rsplit("/", 1)[-1].replace("-", " ").title() or "Home"
+
+
+def build_page_directory(pages: dict, category: str) -> str:
+    """"title — address" for every saved page of one category, or "" when none.
+
+    The address spelling comes from config.UNIVERSITY_PAGES, so the chatbot can
+    answer "where is the fee page?" with a link that is on the page list.
+    """
+    declared = {config._url_path(p["url"]): p["url"] for p in config.UNIVERSITY_PAGES}
+    rows = []
+    for address, text in pages.items():
+        if config.resolve_category(address) != category:
+            continue
+        shown = declared.get(config._url_path(address), address)
+        rows.append(f"{_page_title(text, address)} — {shown}")
+    if not rows:
+        return ""
+    return f"{config.UNIVERSITY_NAME} — page addresses ({category})\n" + "\n".join(sorted(set(rows)))
+
+
 def fetch_page(url: str, session: requests.Session = None) -> tuple[str | None, str]:
     """
     Scrapes one URL. Playwright first, requests fallback.
@@ -1347,6 +1661,13 @@ def fetch_page(url: str, session: requests.Session = None) -> tuple[str | None, 
     # sentence and a button, so find_contentless flags them and they are never
     # ingested. Their PDFs must be, and that is where the content actually is.
     _note_pdf_links(html, url)
+
+    # Header and footer facts, read before _extract_text cuts the page down. A page
+    # with an odd header must never fail the page itself.
+    try:
+        _SITE_INFO[url] = extract_site_info(soup, url)
+    except Exception as exc:
+        logger.warning(f"could not read the header/footer of {url}: {exc}")
 
     # Checked before _extract_text, which edits the soup. An empty page is skipped
     # only for this run: it stays in the config.py list and is read again next time,
@@ -1529,6 +1850,119 @@ def _load_contact_lines() -> set:
     return _load_lines(CONTACT_LINES_CACHE)
 
 
+def _save_site_info(info: dict) -> None:
+    """Remember the home page's header/footer facts for a run with no home page."""
+    try:
+        os.makedirs(os.path.dirname(SITE_NOTE_CACHE) or ".", exist_ok=True)
+        with open(SITE_NOTE_CACHE, "w", encoding="utf-8") as fh:
+            json.dump(info, fh, ensure_ascii=False, indent=1)
+    except OSError as exc:
+        logger.warning(f"could not save {SITE_NOTE_CACHE}: {exc}")
+
+
+def _load_site_info() -> dict | None:
+    try:
+        with open(SITE_NOTE_CACHE, "r", encoding="utf-8") as fh:
+            info = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    for kind in ("social", "portals", "pdfs"):
+        info[kind] = [tuple(item) for item in info.get(kind, [])]
+    return info
+
+
+def _home_site_info() -> dict | None:
+    """The home page's facts from this run, else the last good run's."""
+    for url, info in _SITE_INFO.items():
+        if config._url_path(url) == "/":
+            _save_site_info(info)
+            return info
+    cached = _load_site_info()
+    if cached is None:
+        logger.warning("no home page in this run and no cached header/footer: "
+                       "the site-wide note is not stored")
+    return cached
+
+
+def _item_key(kind: str, item) -> str:
+    if kind in ("social", "portals", "pdfs"):
+        return _address_key(item[1])
+    return re.sub(r"\D", "", item) if _contact_label(item) == "Phone" else item.lower()
+
+
+def _extras_vs_home(home: dict, info: dict) -> dict:
+    """Header or footer items a page has that the home page does not."""
+    extra = {kind: [] for kind in ("social", "portals", "contact", "pdfs", "other")}
+    for kind in extra:
+        known = {_item_key(kind, i) for i in home.get(kind, [])}
+        extra[kind] = [i for i in info.get(kind, []) if _item_key(kind, i) not in known]
+    return extra
+
+
+def _merge_site_info(home: dict, pages: dict) -> tuple[dict, list]:
+    """The home facts plus anything extra found on other pages, and a report list."""
+    merged = {k: list(v) for k, v in home.items()}
+    report = []
+    for url, info in pages.items():
+        for kind, items in _extras_vs_home(home, info).items():
+            for item in items:
+                if _item_key(kind, item) in {_item_key(kind, m) for m in merged[kind]}:
+                    continue
+                merged[kind].append(item)
+                report.append(f"{kind}: {item} (seen on {url})")
+                logger.warning(f"header/footer item not on the home page ({url}): {item}")
+    return merged, report
+
+
+def _unknown_page_links(infos) -> list:
+    known = set(config._DECLARED_CATEGORIES)
+    found = []
+    for info in infos:
+        for url in info.get("pages", []):
+            if config._url_path(url) not in known and url not in found:
+                found.append(url)
+                logger.warning(f"new page found in the header/footer/menu: {url}")
+    return found
+
+
+def _store_notes(kb, notes: dict, results: dict) -> None:
+    """Store each note once per category; a changed note is stored again."""
+    for address, (text, category) in notes.items():
+        res = kb.load_scraped_page(text, address, category,
+                                   page_hash=content_hash(text, address))
+        if res.status in ("added", "updated"):
+            results["notes"] += 1
+        elif res.status != "skipped":
+            results["failed"] += 1
+            logger.warning(f"note {address}: {res.status}")
+
+
+def _site_notes(results: dict) -> dict:
+    """{address: (text, category)} for the site-wide information note."""
+    home = _home_site_info()
+    if home is None:
+        return {}
+    others = {u: i for u, i in _SITE_INFO.items() if config._url_path(u) != "/"}
+    merged, report = _merge_site_info(home, others)
+    results["new_links"].extend(report)
+    results["new_links"].extend(
+        f"new page: {u}" for u in _unknown_page_links([home, *others.values()]))
+    note = build_site_note(merged)
+    if not note:
+        return {}
+    return {config.SITE_INFO_URLS[c]: (note, c) for c in config.CATEGORIES}
+
+
+def _directory_notes(live: dict, alias_drop: set) -> dict:
+    pages = {u: t for u, t in live.items() if u not in alias_drop}
+    notes = {}
+    for category in config.CATEGORIES:
+        text = build_page_directory(pages, category)
+        if text:
+            notes[config.PAGE_DIRECTORY_URLS[category]] = (text, category)
+    return notes
+
+
 def scrape_all_pages(kb, urls: list = None,
                      include_guaranteed: bool = True) -> dict:
     """
@@ -1576,9 +2010,10 @@ def scrape_all_pages(kb, urls: list = None,
                "contentless": 0, "dead": 0, "empty": 0, "aliases": 0, "pages": [],
                "pdfs": 0, "pdfs_skipped": 0, "pdfs_failed": 0,
                "pdfs_refused": 0,
-               "pdf_files": []}
+               "pdf_files": [], "notes": 0, "new_links": []}
 
     reset_pdf_links()
+    reset_site_info()
 
     base_urls = list(dict.fromkeys(GUARANTEED_PAGES)) if include_guaranteed else []
     if urls:
@@ -1838,6 +2273,16 @@ def scrape_all_pages(kb, urls: list = None,
         else:
             results["failed"] += 1
             logger.warning(f"[{n}/{len(fetched)}] Ingest {result.status}: {url}")
+
+    # ── site-wide notes ──────────────────────────────────────
+    # The directories list the WHOLE site, so a partial run (a test of a few pages,
+    # or one page) must not replace them with a short list.
+    notes = _site_notes(results)
+    if include_guaranteed:
+        notes.update(_directory_notes(live, alias_drop))
+    else:
+        logger.info("partial run: page directories left unchanged")
+    _store_notes(kb, notes, results)
 
     # ── pass 3: the documents the pages point at ─────────────
     #

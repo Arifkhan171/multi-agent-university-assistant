@@ -472,39 +472,22 @@ class UniversityAwareChunker:
 
 def _extract_department(source: str) -> str:
     """
-    WHAT: Extracts department name from a URL or filename.
+    WHAT: Extracts the department name from a page address.
 
     WHY:  Enables pre-filtering by department at retrieval time.
           A query "Who is HOD of CS?" can filter to
           department = "computer-science" before vector search runs.
-          This eliminates the manual score-boosting logic in _rerank().
 
-    HOW:  Simple substring matching against known UOLI URL slugs.
-          More specific slugs checked before shorter ones to avoid
-          false matches (e.g. "science" matching "computer-science").
+    HOW:  Only /academics/departments/<name> carries a department. Matching
+          words anywhere in the address tagged a news page that mentions
+          "education" as the Education department, so the path is read, not
+          searched.
     """
     source_lower = source.lower()
 
-    # Order matters — longer/more specific slugs first
-    # WHY: "political-science" contains "science".
-    #      If we checked "science" first we would match wrongly.
-    dept_slugs = [
-        "computer-science",
-        "allied-health-sciences",
-        "management-sciences",
-        "political-science",
-        "islamic-studies",
-        "mathematics",
-        "commerce",
-        "education",
-        "english",
-        "pashto",
-        "zoology",
-    ]
-
-    for slug in dept_slugs:
-        if slug in source_lower:
-            return slug
+    segs = [s for s in config._url_path(source).split("/") if s]
+    if len(segs) >= 3 and segs[0] == "academics" and segs[1] == "departments":
+        return segs[2]
 
     # Policy documents apply university-wide — not one department
     policy_keywords = [
@@ -530,6 +513,22 @@ def _detect_content_type(source: str, category: str, source_type: str) -> str:
           domain but is NOT a faculty listing page.
     """
     source_lower = source.lower()
+
+    # The site-wide notes share the home page path, so they are told apart by
+    # their "#" part before any path rule can file them as ordinary pages.
+    if "/#site-info-" in source_lower:
+        return "site_info"
+    if "/#pages-" in source_lower:
+        return "page_directory"
+
+    segs = [s for s in config._url_path(source).split("/") if s]
+    if segs[:1] == ["about"] and len(segs) == 2 and (
+            segs[1].endswith("-message") or segs[1] == "leadership"):
+        return "leadership_message"
+    if segs[:1] == ["offices"] or segs[:2] == ["research", "oric"]:
+        return "office_info"
+    if segs[:2] == ["academics", "faculty"] or segs[:2] == ["academics", "departments"]:
+        return "faculty_page"
 
     # Leadership pages — must check BEFORE general faculty
     # WHY: vc-message URL contains no "faculty" but is a leadership page
@@ -2940,23 +2939,6 @@ class KnowledgeBase:
                 break
         return results
 
-    # Department name → URL slug mapping for force-include logic
-    _DEPT_SLUGS = {
-        "math": "faculty/mathematics",
-        "maths": "faculty/mathematics",
-        "mathematics": "faculty/mathematics",
-        "pashto": "faculty/pashto",
-        "cs": "faculty/computer-science",
-        "computer": "faculty/computer-science",
-        "english": "faculty/english",
-        "islamic": "faculty/islamic-studies",
-        "commerce": "faculty/commerce",
-        "education": "faculty/education",
-        "management": "faculty/management-sciences",
-        "zoology": "faculty/zoology",
-        "political": "faculty/political-science",
-        "allied": "faculty/allied-health-sciences",
-    }
     @staticmethod
     def _normalize_figure_columns(text: str) -> str:
         """Re-join "figure on one line, caption on the next" statistics blocks.
