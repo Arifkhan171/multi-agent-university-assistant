@@ -616,6 +616,24 @@ _DECLARED_CATEGORIES = {
     _url_path(page["url"]): page["category"] for page in UNIVERSITY_PAGES
 }
 
+# The home page is the address of the site-wide notes, taken from the page list so
+# no address is typed here. The notes (one "site info" and one "page directory"
+# per category) are not web pages: they get an address of their own, made of the
+# home address plus a "#" part, so each can be stored, updated and told apart.
+HOME_URL = next(
+    page["url"] for page in UNIVERSITY_PAGES if _url_path(page["url"]) == "/"
+).rstrip("/")
+SITE_INFO_URLS = {c: f"{HOME_URL}/#site-info-{c}" for c in CATEGORIES}
+PAGE_DIRECTORY_URLS = {c: f"{HOME_URL}/#pages-{c}" for c in CATEGORIES}
+
+# _url_path() drops the "#" part, so every note address would look like the home
+# page. This exact-address table lets resolve_category() answer for a note first.
+_NOTE_CATEGORIES = {
+    address.lower(): category
+    for urls in (SITE_INFO_URLS, PAGE_DIRECTORY_URLS)
+    for category, address in urls.items()
+}
+
 
 def _is_excluded(segs) -> bool:
     if any(seg in _EXCLUDE_SEGMENTS for seg in segs):
@@ -704,6 +722,9 @@ def resolve_category(url):
     assertions in this module check that over every declared URL, and callers
     clamp anything unexpected rather than writing an unreadable category.
     """
+    note_category = _NOTE_CATEGORIES.get(str(url or "").strip().lower())
+    if note_category:
+        return note_category
     segs = _segments(_url_path(url))
     if _is_excluded(segs):
         return None
@@ -813,6 +834,10 @@ def _assert_category_declarations():
             f"config.PDF_SOURCES declares categories outside CATEGORIES "
             f"{CATEGORIES}: {bad_pdfs}"
         )
+
+    bad_notes = {a: c for a, c in _NOTE_CATEGORIES.items() if c not in CATEGORIES}
+    if bad_notes:
+        raise ValueError(f"Site note addresses use categories outside CATEGORIES: {bad_notes}")
 
     swallowed = [p["url"] for p in UNIVERSITY_PAGES
                  if resolve_category(p["url"]) is None]

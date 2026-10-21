@@ -95,7 +95,10 @@ anticipate is the cost of keeping a line on all 65 pages at once:
 find_site_contact_lines, at the end of this file, keeps exactly the same facts
 but on one page instead of sixty-five.
 """
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 # A line must appear on at least this FRACTION of the run's pages to be a
 # candidate. 0.25 sits inside a wide, clean gap measured on the live corpus:
@@ -103,6 +106,12 @@ import re
 # lines, and below that it is 597 lines on 2-10% and 1508 lines unique to one
 # page. Nothing real lives near the boundary, so the exact value is not delicate.
 DEFAULT_THRESHOLD = 0.25
+
+# find_furniture uses a stricter value. On the React site a short real heading
+# such as "Undergraduate Programs" repeats on many pages; at 0.25 it was removed
+# as a menu label. 0.60 only removes lines that sit on most pages. The contact
+# block finder keeps DEFAULT_THRESHOLD, which is measured separately.
+FURNITURE_THRESHOLD = 0.60
 
 # Below this many pages, document frequency means nothing: on a 3-page run every
 # line looks like it is on "33% of pages". A single-page re-scrape via
@@ -191,7 +200,7 @@ def document_frequency(pages: dict) -> dict:
 
 
 def find_furniture(pages: dict,
-                   threshold: float = DEFAULT_THRESHOLD,
+                   threshold: float = FURNITURE_THRESHOLD,
                    min_pages: int = MIN_PAGES_FOR_FREQUENCY) -> set:
     """The set of normalised lines that are site-wide navigation furniture.
 
@@ -209,10 +218,14 @@ def find_furniture(pages: dict,
 
     cutoff = max(2, int(len(pages) * threshold))
     freq = document_frequency(pages)
-    return {
-        key for key, count in freq.items()
-        if count >= cutoff and is_navigation_label(key)
-    }
+    found = {}
+    for key, count in freq.items():
+        if count >= cutoff and is_navigation_label(key):
+            found[key] = count
+    # Logged so a wrongly removed line can be traced after a run.
+    for key, count in sorted(found.items()):
+        logger.info("furniture line removed (%d of %d pages): %r", count, len(pages), key)
+    return set(found)
 
 
 # ── the site-wide contact block ───────────────────────────────

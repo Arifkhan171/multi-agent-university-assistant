@@ -1,18 +1,17 @@
 # Prompt for the Planning Session
 
-Copy everything below the line into the planning session. Change `NN_name` to the spec, for example `05_update_scraper`.
 
 ---
 
 You are the PLANNER for this project. Your only job is to write a plan file. You do NOT write code.
 
-Spec: `.claude/specs/NN_name.md`
-Save the plan to: `.claude/plans/NN_name.md`
+Spec: `.claude/specs/06_cleaning_and_links.md`
+Save the plan to: `.claude/plans/06_cleaning_and_links.md`
 
 Rules:
 1. Do NOT use plan mode, and do NOT call ExitPlanMode. Work in normal mode.
 2. Read first: `.claude/PROJECT_STATUS.md`, then the spec, then only the code parts the spec names. Use grep and offset/limit reads. Do not read whole big files.
-3. You may only create or change ONE file: `.claude/plans/NN_name.md`. Do not edit any other file.
+3. You may only create or change ONE file: `.claude/plans/06_cleaning_and_links.md`. Do not edit any other file.
 4. Do not run git commit, git push, scraping, the server, the eval, or any command with `--force`. Read-only commands (grep, git status, git log, offline pytest) are fine.
 5. Do not start coding, even if it looks easy. Do not ask "shall I start?".
 6. Write the plan in very easy English, short, with no jargon.

@@ -23,10 +23,13 @@ No rush. One small task at a time. Every task is checked before the next one.
 **Every spec must have** these sections (the owner's template):
 Problem Statement, Functional Requirements, API contracts (inputs, outputs, data shapes), Constraints, Edge cases and error handling, Acceptance criteria. Claude may add: Scope, Facts, Dependencies, Git, What You Do.
 
+**Before every spec:** Claude first gives a short overview (what the spec will do, what is done, what is still needed) and waits for the owner's ideas. Only then is the spec written.
+
 **Spec style**
 - Short, very easy English, no jargon, few tables.
-- Always ends with a numbered "What You Do" list.
-- Every command the owner must run is also given right in the chat, ready to copy.
+- Specs are pushed to GitHub, so they read like an expert engineer wrote them. No "What You Do" list, git steps, session steps or owner instructions inside a spec. Those go in the chat, with every command ready to copy.
+
+**Quality rule:** the chatbot must answer every student need from its own knowledge (links, portals, social pages, header and footer facts), never "go and look on the website". Each fact is stored once, not on every page. Header and footer are read on every scrape, so new information there reaches the chatbot.
 
 **Files**
 - Specs: `.claude/specs/NN_name.md`. Plans: `.claude/plans/NN_name.md`.
@@ -73,7 +76,8 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 | 02b | Find hidden pages, click crawl (`tools/find_hidden_pages.py`) | done, merged |
 | 03 | Update link lists in code (`tools/build_url_lists.py`) | done, merged |
 | 04 | Study the new site structure (`tools/study_site_structure.py`) | done, merged |
-| 05 | Update the scraper for React (`.claude/specs/05_update_scraper.md`) | **spec written, code next** |
+| 05 | Update the scraper for React (`.claude/specs/05_update_scraper.md`) | done, merged (live BS CS check: 8 semesters, 47 courses) |
+| 06 | Cleaning rules and links (`.claude/specs/06_cleaning_and_links.md`) | **spec written, waiting for owner review** |
 | 06–31 | See `uoli_work_plan.md` | waiting |
 
 ---
@@ -136,6 +140,10 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 
 - From the spec 05 code review: social media links now come from no page (they are only in the footer), so store them once in the same "site-wide info" note. "Back to All Academic Departments" style link labels leak. Bare `###` / `####` heading lines (old behaviour) remain.
 
+**Spec 07 — small test scrape**
+- Spec 05 changed the line de-duplication: table rows now repeat freely under different headings. Watch whether the 15 pages grow too much.
+- `fetch_page` writes `scratch/_dryrun_web_cache.json`. Keep `scratch/` out of git (consider adding it to `.gitignore`).
+
 **Spec 08 — rebuild**
 - Clear the old caches first (`ocr_cache.json`, `pdf_cache.json`, `proposition_cache.json`, `page_furniture.json`). Keep the `data/` backup.
 
@@ -145,6 +153,10 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 - New pages: NOT found today (the list is fixed and the Phase B crawler is off). Add a daily "find new pages" step that reuses the spec 02/02b logic (menu + hub pages, scroll, gentle speed). New addresses with a known shape (`/news/`, `/research/innovation/events/`, `/academics/programs/`, `/academics/departments/`, `/offices/`) are added automatically, with the category from the `config.py` address rules. Others go to a report for the owner.
 - Removed pages: their old text stays in the database. Rule needed: a page that is dead or empty for 3 runs in a row has its old chunks removed, with a log line.
 - Changed pages: check that the old chunks of a changed page are replaced, not kept next to the new ones.
+
+**Spec 10 — wrong-answer bugs (from the plan 06 review)**
+- `knowledge_base.py` "Force-include department chunks" (about line 3337) uses substring keywords ("cs" also matches "economics", "physics"), and its department list is the old one (no economics etc.). Fix it with whole-word matching and the department names from `config.DEPT_URLS`.
+- `_extract_social_links` in `web_scraper.py` finds nothing since spec 05 (the spec 06 site note replaces it). Remove it in spec 12 cleanup.
 
 **Later**
 - CLAUDE.md says 70 eval questions. The plan is a 100-question hidden final exam (spec 14). Update CLAUDE.md then.

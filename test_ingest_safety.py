@@ -343,6 +343,11 @@ SITE["https://uoli.edu.pk/offices/faculty-and-staff"] = (        # 404 template
     "Oops! Something went Wrong... we couldn't find your page.\nBack to Home\n"
     + FOOT)
 SITE["https://uoli.edu.pk/feed/"] = "irrelevant"                 # excluded by URL
+# The contact page keeps the contact block; ordinary pages lose it. Without a
+# contact page in the run, the contact lines are (correctly) left on every page.
+CONTACT_URL = "https://uoli.edu.pk/contact"
+SITE[CONTACT_URL] = ("Contact Us\nWrite to the registrar for any question about "
+                     "enrolment.\n" + FOOT)
 
 REAL_PAGE_URL = "https://uoli.edu.pk/academics/rules-0"
 # The same page served at a deeper URL — the /contact vs /about/contact shape.
@@ -354,6 +359,8 @@ saved_guaranteed = ws.GUARANTEED_PAGES
 saved_fetch_page = ws.fetch_page
 saved_time = ws.time
 saved_cache = ws.FURNITURE_CACHE
+saved_contact_cache = ws.CONTACT_LINES_CACHE
+saved_note_cache = ws.SITE_NOTE_CACHE
 
 fetch_log = []
 
@@ -380,6 +387,9 @@ ws.GUARANTEED_PAGES = list(SITE)
 ws.fetch_page = fake_fetch_page
 ws.time = types.SimpleNamespace(sleep=lambda _s: None)   # no 0.8s per page
 ws.FURNITURE_CACHE = "./data/_test_furniture_cache.json"
+# Redirected so the test never reads or overwrites the real caches in data/.
+ws.CONTACT_LINES_CACHE = "./data/_test_contact_lines.json"
+ws.SITE_NOTE_CACHE = "./data/_test_site_note.json"
 
 ingested = {}          # url -> (text, page_hash, legacy_hash, category)
 
@@ -426,8 +436,9 @@ try:
     check("all 20 real pages were ingested",
           sum(1 for u in ingested if "rules-" in u) == 20,
           f"{sum(1 for u in ingested if 'rules-' in u)} of 20")
-    check("results['scraped'] matches", res["scraped"] == 20,
-          f"scraped={res['scraped']}")
+    check("the contact page was ingested", CONTACT_URL in ingested)
+    check("results['scraped'] matches (20 pages + the contact page)",
+          res["scraped"] == 21, f"scraped={res['scraped']}")
 
     check("the alias URL was NOT ingested", ALIAS_URL not in ingested,
           "the same page is being indexed twice; the two copies then compete "
@@ -450,9 +461,16 @@ try:
     check("the page's own content survived",
           "seventy five percent" in text and "Academic Rule 0" in text,
           f"real content was stripped:\n{text}")
-    check("the address survived (it is the answer to a real question)",
-          "Zerh Karez" in text)
-    check("the switchboard number survived", "410051" in text)
+    # The contact block is stated once, on the contact page, instead of on every
+    # page: the answer to "what is the address?" is still in the corpus.
+    contact_text = ingested[CONTACT_URL][0]
+    check("the address is kept on the contact page (it answers a real question)",
+          "Zerh Karez" in contact_text)
+    check("the switchboard number is kept on the contact page",
+          "410051" in contact_text)
+    check("the address is not repeated on an ordinary page", "Zerh Karez" not in text)
+    check("the switchboard number is not repeated on an ordinary page",
+          "410051" not in text)
     check("the category came from resolve_category",
           cat == config_mod.resolve_category(REAL_PAGE_URL),
           f"got '{cat}'")
@@ -504,7 +522,8 @@ try:
               "footer that the full run removed is re-admitted — the corpus "
               "ends up clean or dirty depending on which phase ingested a page")
         check("its own content is intact", "minimum CGPA" in text_b)
-        check("the address still survives on the small path", "Zerh Karez" in text_b)
+        check("the contact block is stripped on the small path too (cached lines)",
+              "Zerh Karez" not in text_b)
         check("the page is not dropped as contentless on a small run",
               res_b["contentless"] == 0,
               f"contentless={res_b['contentless']} — find_contentless must "
@@ -526,6 +545,11 @@ finally:
     if os.path.exists(ws.FURNITURE_CACHE) and "_test_" in ws.FURNITURE_CACHE:
         os.remove(ws.FURNITURE_CACHE)
     ws.FURNITURE_CACHE = saved_cache
+    for cache in (ws.CONTACT_LINES_CACHE, ws.SITE_NOTE_CACHE):
+        if os.path.exists(cache) and "_test_" in cache:
+            os.remove(cache)
+    ws.CONTACT_LINES_CACHE = saved_contact_cache
+    ws.SITE_NOTE_CACHE = saved_note_cache
 
 print("\n" + "=" * 68)
 if FAILURES:
