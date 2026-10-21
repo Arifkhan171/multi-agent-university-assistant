@@ -359,7 +359,7 @@ def _ocr_page(page) -> tuple:
         import io
 
         import web_scraper
-        reader = getattr(web_scraper, "_OCR_READER", None)
+        reader = web_scraper._get_ocr_reader()
         if reader is None:
             return "", False, 0.0
 

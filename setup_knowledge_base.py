@@ -449,8 +449,8 @@ def step1_scrape_website(kb: KnowledgeBase) -> dict:
     Strategy:
       1. scrape_all_pages() in web_scraper.py always starts from GUARANTEED_PAGES
          (all departments, offices, leadership pages).
-      2. Then the crawler recursively discovers additional pages not in the static list.
-      3. Both sets are merged and deduplicated before indexing.
+      2. Only if config.USE_AUTO_CRAWLER is on, the crawler also discovers pages
+         that are not in the static list (off by default: it cannot read React).
     """
     from web_scraper import GUARANTEED_PAGES
     # The PDF keys are carried here as well as the page keys. They were not, and
@@ -469,21 +469,25 @@ def step1_scrape_website(kb: KnowledgeBase) -> dict:
     # --- Phase A: Guaranteed Static Pages ---
     print("  Phase A: Scraping all guaranteed university pages...")
     results_a = scrape_all_pages(kb, urls=GUARANTEED_PAGES)
-    print(f"  Phase A done — New: {results_a['scraped']}, Skipped: {results_a.get('skipped',0)}, Failed: {results_a['failed']}")
+    print(f"  Phase A done — New: {results_a['scraped']}, Skipped: {results_a.get('skipped',0)}, Empty: {results_a.get('empty',0)}, Failed: {results_a['failed']}")
     print()
 
     # --- Phase B: Auto-Crawler (finds pages we missed) ---
-    print("  Phase B: Running crawler to discover additional pages...")
-    crawler = UniversityCrawler("https://uoli.edu.pk/", "uoli.edu.pk")
-    all_crawled_urls = crawler.crawl(max_pages=300)
+    extra_urls: list = []
+    if config.USE_AUTO_CRAWLER:
+        print("  Phase B: Running crawler to discover additional pages...")
+        crawler = UniversityCrawler("https://uoli.edu.pk/", "uoli.edu.pk")
+        all_crawled_urls = crawler.crawl(max_pages=300)
 
-    # Only pass new URLs not already in our guaranteed list
-    guaranteed_set = {u.rstrip("/") for u in GUARANTEED_PAGES}
-    extra_urls = [
-        u for u in all_crawled_urls
-        if u.rstrip("/") not in guaranteed_set
-    ]
-    print(f"  Crawler found {len(all_crawled_urls)} pages, {len(extra_urls)} new to scrape.")
+        # Only pass new URLs not already in our guaranteed list
+        guaranteed_set = {u.rstrip("/") for u in GUARANTEED_PAGES}
+        extra_urls = [
+            u for u in all_crawled_urls
+            if u.rstrip("/") not in guaranteed_set
+        ]
+        print(f"  Crawler found {len(all_crawled_urls)} pages, {len(extra_urls)} new to scrape.")
+    else:
+        print("  Phase B off (config.USE_AUTO_CRAWLER = False) — using the config.py page list only.")
 
     if extra_urls:
         # include_guaranteed=False: Phase A has already fetched all 78 guaranteed
@@ -506,7 +510,8 @@ def step1_scrape_website(kb: KnowledgeBase) -> dict:
         summary["skipped"] = results_a.get("skipped", 0) + results_b.get("skipped", 0)
         _merge_pdf_counts(results_a, results_b)
     else:
-        print("  No extra pages found by crawler.")
+        if config.USE_AUTO_CRAWLER:
+            print("  No extra pages found by crawler.")
         summary["scraped"] = results_a["scraped"]
         summary["failed"]  = results_a["failed"]
         summary["skipped"] = results_a.get("skipped", 0)

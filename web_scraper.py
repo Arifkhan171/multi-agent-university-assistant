@@ -26,9 +26,7 @@ UPGRADE LOG:
   Phase 3 (this version): 6 production fixes
     - Fix 1: Global template images blocked (logo, nav, icons)
     - Fix 2: seen_images dedup runs after URL normalization (bug fix)
-    - Fix 3: Advertisement.jpeg extracted from homepage only
     - Fix 4: Page hash computed from HTML text only (not OCR content)
-    - Fix 5: Ad image pixel MD5 detects new ad with same filename
     - Fix 6: Table rows use replace_with() — eliminates double extraction
 """
 
@@ -39,6 +37,7 @@ import json
 import time
 import logging
 import hashlib
+import importlib.util
 import concurrent.futures
 import requests
 from bs4 import BeautifulSoup
@@ -66,18 +65,43 @@ except ImportError:
 
 
 # ── EasyOCR availability check ───────────────────────────────
-try:
-    import easyocr
-    import urllib.request
-    from PIL import Image
-    import io
-    OCR_AVAILABLE = True
-    _OCR_READER = easyocr.Reader(['en'], gpu=False, verbose=False)
-    logger.info("EasyOCR available — image text extraction enabled ✓")
-except Exception:
-    OCR_AVAILABLE = False
-    _OCR_READER = None
+# find_spec only looks for the package; it does not import it. Building the reader
+# loads a large model (and may download ~100 MB), which made every import of this
+# module slow even when no image was ever read. The reader is built on first use.
+def _package_installed(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+OCR_AVAILABLE = _package_installed("easyocr") and _package_installed("PIL")
+if OCR_AVAILABLE:
+    logger.info("EasyOCR installed — image text extraction enabled ✓ (loads on first use)")
+else:
     logger.warning("EasyOCR not installed — image ads will not be read")
+
+_OCR_READER = None
+_OCR_READER_FAILED = False
+
+
+def _get_ocr_reader():
+    """Return the shared EasyOCR reader, building it on first call; None if unavailable.
+
+    A failed build is remembered so a broken install is not retried for every image.
+    """
+    global _OCR_READER, _OCR_READER_FAILED
+    if _OCR_READER is not None:
+        return _OCR_READER
+    if not OCR_AVAILABLE or _OCR_READER_FAILED:
+        return None
+    try:
+        import easyocr
+        _OCR_READER = easyocr.Reader(['en'], gpu=False, verbose=False)
+    except Exception as exc:
+        _OCR_READER_FAILED = True
+        logger.warning(f"EasyOCR reader could not be built: {exc}")
+    return _OCR_READER
 
 
 def normalize_url(url: str) -> str:
@@ -88,18 +112,15 @@ def normalize_url(url: str) -> str:
 # which pages exist. The name stays because setup_knowledge_base.py imports it.
 GUARANTEED_PAGES = [page["url"] for page in config.UNIVERSITY_PAGES]
 
-_NAV_NOISE = {
-    "about us", "vc message", "pro vc message", "registrar message",
-    "dean message", "contact", "overview", "admission", "undergraduate programs",
-    "graduate programs", "library", "bus routes", "alumni", "departments",
-    "offices", "downloads", "dims", "staffs", "help desk", "office of registrar",
-    "directorate of it", "controller of examination office",
-    "directorate of quality enhancement", "fao", "directorate of postgraduate studies",
-    "allied health sciences", "commerce", "computer science", "education", "english",
-    "islamic studies", "management sciences", "mathematics", "pashto",
-    "political science", "zoology", "why uoli", "fee structure", "facilities @ uoli",
-    "admissions", "faculty @ uoli", "career counselling", "acedemic rules",
-    "information", "contact us", "uoli", "apply now",
+# Footer credit lines. Used ONLY when a page has no main#main-content: on the React
+# site the footer is already outside main, so applying this inside main would delete
+# real lines such as "Curriculum developed by HEC". It no longer lists the old
+# developer credit, because M. Khawar Abbas is now the real Computer Science HOD.
+_FOOTER_NOISE = {
+    "developed by",
+    "all rights reserved",
+    "© 2026",
+    "why uoli?",
 }
 
 
@@ -332,6 +353,10 @@ def _read_image_text(image_data: bytes, digest: str, src: str) -> dict:
 
     result = {"text": "", "is_table": False, "confidence": 0.0,
               "rows": 0, "cols": 0}
+    reader = _get_ocr_reader()
+    if reader is None:
+        # Not cached: a missing reader is a setup problem, not a fact about the image.
+        return result
     try:
         from PIL import Image
         import io
@@ -359,7 +384,7 @@ def _read_image_text(image_data: bytes, digest: str, src: str) -> dict:
         # course code, its name and its credit hours on one line, which is the
         # only form in which the question "how many credits is 331?" is
         # answerable.
-        boxes = _OCR_READER.readtext(np.array(image), detail=1, paragraph=False)
+        boxes = reader.readtext(np.array(image), detail=1, paragraph=False)
         result = table_reconstruct.reconstruct(boxes)
     except Exception as exc:
         logger.debug(f"OCR failed for {src}: {exc}")
@@ -456,7 +481,7 @@ def _extract_images_text(soup: BeautifulSoup, base_url: str) -> str:
       * if the page that owns an image later drops it, the text goes with it until
         reset_image_ownership() is called.
     """
-    if not OCR_AVAILABLE or _OCR_READER is None:
+    if not OCR_AVAILABLE:
         return ""
 
     extracted_texts = []
@@ -608,171 +633,299 @@ _CONTACT_SIGNAL_RE = re.compile(
     re.I)
 
 
-# ── Faculty cards ──────────────────────────────────────────────────────────
+# ── Person cards ───────────────────────────────────────────────────────────
 #
 # WHY THIS EXISTS
-# The theme renders every staff member as a self-contained <div class="faculty-card">
-# holding a name, a designation and — only sometimes — an email and a phone
-# extension. get_text() flattens those cards into one undifferentiated run of
+# Every staff member is a self-contained card with a name, a job, a department, an
+# optional email and a "Profile" button. get_text() flattens the cards into loose
 # lines, which destroys the one thing that matters: which email belongs to which
-# person.
+# person. One atomic line per person makes a name paired with a stranger's email
+# impossible, and an explicit "Email not listed." stops the LLM from filling a gap
+# from a neighbouring card.
 #
-# MEASURED ON THE LIVE SITE 2026-09-13: 134 cards across 12 pages, and 53 of them
-# carry no email at all. Flattened, a card with no email is indistinguishable from
-# the next card's email, so the proposition LLM pairs a name with a stranger's
-# address — e.g. "Ammar Ibrahim | hazrat.bilal@uoli.edu.pk", where the real card
-# for Ammar Ibrahim has no email on it whatsoever. That is a fabricated fact, and
-# faithfulness is exactly the metric that punishes it.
-#
-# So parse the cards structurally and emit one atomic line per person. Two things
-# make the fabrication impossible rather than merely unlikely:
-#   1. One line per card — two people can never end up on the same line.
-#   2. An explicit "Email not listed." — silence is what invites the LLM to fill
-#      the gap from a neighbour, and it also gives the bot a true answer to
-#      "what is X's email" instead of a guess.
-#
-# The theme ships two card templates; both are handled:
-#   Variant A (66 cards): .faculty-name / .faculty-designation / .faculty-icons a
-#   Variant B (68 cards): .faculty-content h3 / .designation / .email
-#
-# Cards flagged <div class="faculty-card hod"> (9 of them) additionally get an
-# explicit "is the Head of the Department of X" sentence, which is a far cleaner
-# HOD signal than hoping the designation string survives chunking.
+# A card is found by its "Profile" button: the smallest box that holds the button
+# and exactly one <h3> (the name). No class names are used, because the site's
+# Tailwind classes change with every build.
 
-_DEPT_HEADING_RE = re.compile(
-    r"\b(department|directorate|office|faculty of|school of|cent(?:re|er))\b", re.I)
-
-# Slugs whose title-cased form is wrong or reads badly.
-_DEPT_SLUG_OVERRIDES = {
-    "directorate-of-it":                "Directorate of IT",
-    "office-of-treasurer":              "Office of the Treasurer",
-    "controller-of-examination-office":  "Controller of Examination Office",
-}
+_UNIT_RE = re.compile(r"^(department|directorate|office|cent(?:re|er))\b", re.I)
+_HOD_BADGES = {"hod", "department head"}
+_HOD_JOB_RE = re.compile(r"\bHOD\b|head of|chairperson|chairman", re.I)
 
 
-def _faculty_department(card, base_url: str):
-    """
-    Which department/office a card belongs to.
-
-    The URL wins whenever it names one, because a department page is unambiguous
-    and its on-page heading is usually just the word "Faculty". The combined
-    /faculty listing is the case the URL cannot answer: it stacks eight
-    departments on one page, each in its own <div class="faculty-section"> whose
-    heading is a *preceding sibling*, not a child — so fall back to walking
-    backwards for the nearest "Department of …" heading.
-    """
-    from urllib.parse import urlparse
-
-    path = urlparse(base_url).path.strip("/")
-    segments = [s for s in path.split("/") if s]
-
-    if segments and segments != ["faculty"]:
-        slug = segments[-1]
-        if slug in _DEPT_SLUG_OVERRIDES:
-            return _DEPT_SLUG_OVERRIDES[slug]
-        title = slug.replace("-", " ").title()
-        if len(segments) >= 2 and segments[0] == "faculty":
-            return f"Department of {title}"
-        if _DEPT_HEADING_RE.search(title):
-            return title
-        return title
-
-    # Combined listing — find the nearest preceding department heading.
-    previous = card.find_previous(["h1", "h2", "h3", "h4"])
-    steps = 0
-    while previous is not None and steps < 20:
-        if not previous.find_parent(class_="faculty-card"):
-            text = previous.get_text(" ", strip=True)
-            if text and len(text) < 70 and _DEPT_HEADING_RE.search(text):
-                return text
-        previous = previous.find_previous(["h1", "h2", "h3", "h4"])
-        steps += 1
-    return None
+def _find_person_cards(main) -> list:
+    """Each person card in main: the smallest box around a Profile button and one <h3>."""
+    cards, seen = [], set()
+    for button in main.find_all(["a", "button"]):
+        if not re.match(r"^Profile\b", button.get_text(" ", strip=True)):
+            continue
+        box = button
+        while box is not None and box is not main and box.find("h3") is None:
+            box = box.parent
+        if box is None or box is main or len(box.find_all("h3")) != 1:
+            logger.warning("Profile button without a single-name card — left as text")
+            continue
+        if id(box) not in seen:
+            seen.add(id(box))
+            cards.append(box)
+    return cards
 
 
-def _parse_faculty_card(card, base_url: str):
-    """Turn one card into clean sentences, or None if it has no usable name."""
-    content = card.select_one(".faculty-content")
+def _card_badges(card) -> list[str]:
+    """Short labels such as HOD, Visiting or On Leave: spans that are not part of a
+    paragraph, the email link or the Profile button."""
+    badges = []
+    for span in card.find_all("span"):
+        inside_text = False
+        for parent in span.parents:
+            if parent is card:
+                break
+            if parent.name in ("p", "a", "button"):
+                inside_text = True
+                break
+        text = span.get_text(" ", strip=True)
+        if text and not inside_text:
+            badges.append(text)
+    return badges
 
-    if content is not None:                       # Variant B
-        name_el  = content.find(["h2", "h3", "h4"])
-        desig_el = content.select_one(".designation")
-        email_el = content.select_one(".email")
-        email    = email_el.get_text(strip=True) if email_el else ""
-    else:                                         # Variant A
-        name_el  = card.select_one(".faculty-name")
-        desig_el = card.select_one(".faculty-designation")
-        mailto   = card.select_one('a[href^="mailto:"]')
-        email    = ""
-        if mailto is not None:
-            email = (mailto.get("href", "")[len("mailto:"):].strip()
-                     or mailto.get_text(strip=True))
 
-    name = name_el.get_text(" ", strip=True) if name_el else ""
-    if not name:
-        return None
-
-    designation = desig_el.get_text(" ", strip=True) if desig_el else ""
+def _person_lines(card, seen_emails: set) -> list[str]:
+    """One person card as clean sentences; [] if this person was already written."""
+    name = card.find("h3").get_text(" ", strip=True)
+    mailto = card.select_one('a[href^="mailto:"]')
+    email = ""
+    if mailto is not None:
+        email = (mailto.get("href", "")[len("mailto:"):].strip()
+                 or mailto.get_text(strip=True))
     if "@" not in email:
         email = ""
+    # The same person can be listed twice on one page (a department head appears in
+    # the head box and again in the list); the second copy adds nothing.
+    if email and email.lower() in seen_emails:
+        return []
+    if email:
+        seen_emails.add(email.lower())
 
-    phone = ""
+    paragraphs = [p.get_text(" ", strip=True) for p in card.find_all("p")]
+    department = next((p for p in paragraphs if _UNIT_RE.match(p)), "")
+    area = next((p for p in paragraphs if p.lower().startswith("area:")), "")
+    job = next((p for p in paragraphs
+                if p and p != department and p != area), "")
+
+    badges = _card_badges(card)
+    lowered = {b.lower() for b in badges}
+    is_hod = bool(lowered & _HOD_BADGES) or bool(_HOD_JOB_RE.search(job))
+    if "visiting" in lowered and job:
+        job += " (Visiting)"
+    status = [b for b in badges if b.lower() not in _HOD_BADGES | {"visiting"}
+              and b.lower() != "profile" and b != "→" and "@" not in b]
+
+    details = ", ".join(x for x in (job, department) if x)
+    line = f"{name} — {details}." if details else f"{name}."
+    if status:
+        line += f" Status: {', '.join(status)}."
+    if area:
+        line += f" {area.rstrip('.')}."
+    line += f" Email: {email}." if email else " Email not listed."
     tel = card.select_one('a[href^="tel:"]')
     if tel is not None:
-        phone = (tel.get("href", "")[len("tel:"):].strip()
-                 or tel.get_text(strip=True))
-
-    department = _faculty_department(card, base_url)
-
-    # ── Line 1: the person, atomically ──────────────────────────────────────
-    where = f", {department}" if department else ""
-    if designation:
-        line = f"{name} — {designation}{where}."
-    else:
-        line = f"{name}{where}."
-
-    # Stated outright, because an absent email is what lets a neighbour's
-    # address get borrowed, and "not listed" is itself the correct answer.
-    line += f" Email: {email}." if email else " Email not listed."
-    if phone:
+        phone = tel.get("href", "")[len("tel:"):].strip() or tel.get_text(strip=True)
         line += f" Phone extension: {phone}."
 
     lines = [line]
-
-    # ── Line 2: an explicit HOD sentence when the markup says so ────────────
-    is_hod = "hod" in (card.get("class") or [])
-    if not is_hod and designation:
-        is_hod = bool(re.search(r"\bHOD\b|head of|chairperson|chairman",
-                                designation, re.I))
     if is_hod and department:
         lines.append(f"{name} is the Head of the {department} "
-                     f"at the University of Loralai.")
-
+                     f"at the {config.UNIVERSITY_NAME}.")
     return lines
 
 
-def _extract_faculty_cards(main, base_url: str) -> None:
-    """
-    Replace every faculty card in-place with clean text.
+def _extract_people(main, base_url: str) -> None:
+    """Replace every person card in-place with its clean lines.
 
     Uses replace_with() for the same reason the <table> handler does: anything
     left in the soup is re-read by get_text() further down, so inserting text
     without removing the original markup duplicates every field.
     """
-    cards = main.select("div.faculty-card")
-    if not cards:
-        return
-
-    parsed = 0
+    cards = _find_person_cards(main)
+    seen_emails: set = set()
+    written = 0
     for card in cards:
-        lines = _parse_faculty_card(card, base_url)
-        if lines is None:
-            continue
-        card.replace_with("\n" + "\n".join(lines) + "\n")
-        parsed += 1
+        lines = _person_lines(card, seen_emails)
+        if lines:
+            card.replace_with("\n" + "\n".join(lines) + "\n")
+            written += 1
+        else:
+            card.decompose()
+    if cards:
+        logger.info(f"person cards: {written} written, {len(cards) - written} "
+                    f"repeated, on {base_url}")
 
-    if parsed:
-        logger.info(f"faculty cards: {parsed}/{len(cards)} parsed on {base_url}")
+
+def _remove_landmarks_outside_main(soup: BeautifulSoup, main) -> None:
+    """Delete the site header, menu and footer that sit around main#main-content.
+
+    Landmarks INSIDE main are content and stay: the page title is a <header> in
+    main, and the event details are an <aside> in main. A landmark that wraps main
+    is also kept, because deleting it would delete the page.
+    """
+    for tag in soup(["header", "nav", "footer", "aside"]):
+        if getattr(tag, "decomposed", False):
+            continue
+        inside_main = any(p is main for p in tag.parents)
+        wraps_main = any(p is tag for p in main.parents)
+        if not inside_main and not wraps_main:
+            tag.decompose()
+
+
+def _remove_breadcrumb(main) -> None:
+    # The trail ("Home › About") is inside main on every page and says nothing the
+    # page title does not already say.
+    for crumb in main.select('nav[aria-label="Breadcrumb" i]'):
+        crumb.decompose()
+
+
+# Exact UI labels that carry no information. Matched against a whole line (or a
+# whole table cell), never as a substring, so a real sentence is never touched.
+_BUTTON_LABELS = frozenset({
+    "Share", "Print", "Profile", "Profile →", "→",
+    "Tap course for syllabus", "Tap course for details", "View Outline →",
+    "Fullscreen", "Try Again", "Ask AI", "Ask AI Assistant",
+})
+_LABEL_RE = re.compile(r"^(Sem \d+|Showing \d+ Courses)$")
+_SEM_BUTTON_RE = re.compile(r"^\s*Sem\s*(\d+)", re.I)
+_FILTER_BUTTON_RE = re.compile(r"^All\b")
+_SEMESTER_ATTR = "data-uoli-semesters"
+_MIN_OWN_CHARS = 150
+_EMPTY_PAGE_MARKERS = ("Program Details Not Found", "We could not find the requested")
+
+
+def _is_label(text: str) -> bool:
+    text = text.strip("•#| ")
+    return text in _BUTTON_LABELS or bool(_LABEL_RE.match(text))
+
+
+def _remove_filter_bars(main, base_url: str = "") -> None:
+    """Delete the buttons of every filter bar ("All Departments", "All Events (12)").
+
+    They are page controls, not facts. A bar is found by one button that starts with
+    the WORD "All" (so "Allied Health Sciences" is safe); the bar is the smallest box
+    holding two or more buttons. Only the buttons go, never the box, so content that
+    happens to share the box survives. Question buttons on the FAQ page sit in a
+    different box and stay.
+    """
+    removed = []
+    for button in main.find_all("button"):
+        if button.parent is None or not _FILTER_BUTTON_RE.match(button.get_text(" ", strip=True)):
+            continue
+        box = button.parent
+        while box is not None and box is not main and len(box.find_all("button")) < 2:
+            box = box.parent
+        if box is None or box is main or len(box.find_all("button")) > 15:
+            continue
+        for item in box.find_all("button"):
+            removed.append(item.get_text(" ", strip=True))
+            item.decompose()
+    if removed:
+        logger.info(f"filter bar buttons removed on {base_url}: {removed}")
+
+
+def _course_area(main, section):
+    """Smallest box that holds every 'Sem N' button outside `section` plus the table."""
+    buttons = [b for b in main.find_all("button")
+               if _SEM_BUTTON_RE.match(b.get_text(" ", strip=True))
+               and section not in b.parents]
+    tables = [t for t in main.find_all("table") if section not in t.parents]
+    if not buttons or not tables:
+        return None
+    box = buttons[0]
+    while box is not None and box is not main:
+        if tables[0] in box.descendants and all(b in box.descendants for b in buttons):
+            return box
+        box = box.parent
+    return None
+
+
+def _remove_course_area(main, base_url: str = "") -> None:
+    """Once every semester table has been copied into the marked section, delete the
+    original course area: the first table, the Sem buttons and the phone copy of the
+    list would otherwise repeat Semester I's courses.
+
+    Found by structure (buttons + table), never by class names, which change with
+    every site build.
+    """
+    section = main.select_one(f"section[{_SEMESTER_ATTR}]")
+    if section is None:
+        return
+    area = _course_area(main, section)
+    if area is None:
+        logger.warning(f"semester copies found but no course area to remove: {base_url}")
+        return
+    logger.info(f"course area removed ({len(area.get_text(strip=True))} chars) on {base_url}")
+    area.decompose()
+
+
+def _is_empty_page(soup: BeautifulSoup) -> bool:
+    """True if the page has no content of its own.
+
+    Measured on a copy of main without the breadcrumb and the title header, so the
+    page's own words are what is counted. The check is skipped when there is no
+    main#main-content: such a page is judged by the old rules.
+    """
+    main = soup.select_one("main#main-content")
+    if main is None:
+        return False
+    copy = BeautifulSoup(str(main), "html.parser")
+    for tag in copy(["script", "style", "noscript", "svg", "iframe", "header"]):
+        tag.decompose()
+    _remove_breadcrumb(copy)
+    text = copy.get_text(" ", strip=True)
+    return len(text) < _MIN_OWN_CHARS or any(m in text for m in _EMPTY_PAGE_MARKERS)
+
+
+def _remove_chrome_landmarks(soup: BeautifulSoup, base_url: str) -> None:
+    """Fallback for a page with no main#main-content: delete the chrome landmarks.
+
+    The contact page is not exempt outright. An earlier exemption kept the menu in
+    the /contact parent, so menu labels were interleaved with the contact facts and
+    "what is the phone number" retrieved the wrong documents. Instead, on that page
+    a landmark is removed only once it has been shown not to carry contact details.
+    """
+    _is_contact_page = page_furniture.is_contact_page(base_url)
+    for tag in soup(["header", "nav", "footer", "aside"]):
+        # A landmark holding a page's actual content is a theme bug, and silently
+        # deleting a thousand characters of real text only ever shows up later as
+        # a lower RAGAS score, never as an error.
+        if len(tag.get_text(strip=True)) > _MAX_CHROME_CHARS:
+            logger.warning(
+                f"<{tag.name}> holds {len(tag.get_text(strip=True))} chars — "
+                f"too much to be chrome, keeping it: {base_url}")
+            continue
+        # Hrefs are checked as well as the text because a click-to-call link
+        # carries the number in tel: and shows only "Call us".
+        if _is_contact_page:
+            _probe = tag.get_text(" ", strip=True) + " " + " ".join(
+                a.get("href", "") for a in tag.find_all("a"))
+            if _CONTACT_SIGNAL_RE.search(_probe):
+                logger.info(f"contact page: keeping <{tag.name}> — "
+                            f"it carries contact details")
+                continue
+        tag.decompose()
+
+
+def _find_fallback_main(soup: BeautifulSoup):
+    """Best content block for a page with no main#main-content (old-style pages)."""
+    for selector in [
+        "main",
+        "article",
+        '[id*="content"]',
+        '[class*="entry-content"]',
+        '[class*="page-content"]',
+        '[class*="post-content"]',
+        "body",
+    ]:
+        candidate = soup.select_one(selector)
+        if candidate and len(candidate.get_text(strip=True)) > 100:
+            return candidate
+    return soup
 
 
 def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
@@ -785,63 +938,16 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
     for tag in soup(["script", "style", "noscript", "svg", "iframe"]):
         tag.decompose()
 
-    # Stage 1a: Remove the chrome landmarks.
-    #
-    # WHAT THIS ACTUALLY REMOVES, MEASURED ON THE LIVE SITE 2026-09-13
-    # ────────────────────────────────────────────────────────────────
-    # <footer> and <aside> DO NOT EXIST on uoli.edu.pk — zero occurrences on
-    # every page checked. <header> (558 chars) and <nav> (546 chars) hold the
-    # off-canvas mobile menu and nothing else: menu labels, no phone, no address,
-    # no email. page_furniture.find_furniture already strips those labels by
-    # frequency, so this stage is not what fixes the duplicate contact block —
-    # find_site_contact_lines is, and it runs in scrape_all_pages.
-    #
-    # It is still worth doing. Removing the menu here means those labels never
-    # reach the frequency counter at all, which is cheaper and more robust than
-    # recognising them afterwards, and it holds even on a single-page re-scrape
-    # where frequency cannot be measured.
-    #
-    # WHY THE CONTACT PAGE IS NO LONGER EXEMPT OUTRIGHT
-    # The exemption was defensive: a redesign could move the real contact block
-    # into a <footer>, and on that one page there would be nowhere else for it to
-    # live. It backfired. The menu stayed in the page, so the single /contact
-    # parent interleaved menu labels with the contact facts, no clean
-    # info@uoli.edu.pk proposition ever formed, and "what is the phone number"
-    # retrieved policy PDFs while "what is the email" returned a procurement
-    # address out of a tender PDF.
-    #
-    # Measured on /contact 2026-09-13: <header> (595 chars) and <nav> (582 chars)
-    # contain no email and no phone at all, while the page body still holds both
-    # after they are removed — so the exemption bought nothing and cost the
-    # answer. The guard below keeps the original intent without the cost: on the
-    # contact page a landmark is removed only once it has been shown not to carry
-    # contact details, so if a redesign ever does move the block into a <footer>,
-    # that footer is kept automatically.
-    _is_contact_page = page_furniture.is_contact_page(base_url)
-    for tag in soup(["header", "nav", "footer", "aside"]):
-        # A landmark holding a page's actual content is not a landmark, it is
-        # a theme bug — and silently deleting a thousand characters of real
-        # text is exactly the kind of failure that shows up as a RAGAS score
-        # and never as an error. Measured: the largest of these on any of the
-        # 65 pages is 558 chars, so this ceiling never fires on today's site.
-        if len(tag.get_text(strip=True)) > _MAX_CHROME_CHARS:
-            logger.warning(
-                f"<{tag.name}> holds {len(tag.get_text(strip=True))} chars — "
-                f"too much to be chrome, keeping it: {base_url}")
-            continue
-        # On the contact page only, a landmark that actually carries contact
-        # details is the one thing that must never be deleted. Hrefs are checked
-        # alongside the text because a click-to-call link carries the number in
-        # tel: and shows only "Call us". Today no landmark matches, so this keeps
-        # nothing and the menu still goes.
-        if _is_contact_page:
-            _probe = tag.get_text(" ", strip=True) + " " + " ".join(
-                a.get("href", "") for a in tag.find_all("a"))
-            if _CONTACT_SIGNAL_RE.search(_probe):
-                logger.info(f"contact page: keeping <{tag.name}> — "
-                            f"it carries contact details")
-                continue
-        tag.decompose()
+    # Stage 1a: Find the real content block and remove the site chrome around it.
+    # The site nests two main#main-content tags; select_one returns the outer one,
+    # which also holds the breadcrumb and the page-title <header>.
+    main = soup.select_one("main#main-content")
+    has_main = main is not None
+    if has_main:
+        _remove_landmarks_outside_main(soup, main)
+    else:
+        logger.info(f"no main#main-content, using the fallback selectors: {base_url}")
+        _remove_chrome_landmarks(soup, base_url)
 
     # Stage 1b: Extract social links (anchor hrefs survive SVG removal)
     social_text = _extract_social_links(soup, base_url)
@@ -849,29 +955,22 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
     # Stage 1c: Extract image text via OCR
     image_text = _extract_images_text(soup, base_url)
 
-    # Stage 2: Find main content block
-    main = None
-    for selector in [
-        "main",
-        "article",
-        '[id*="content"]',
-        '[class*="entry-content"]',
-        '[class*="page-content"]',
-        '[class*="post-content"]',
-        "body",
-    ]:
-        candidate = soup.select_one(selector)
-        if candidate and len(candidate.get_text(strip=True)) > 100:
-            main = candidate
-            break
-    if not main:
-        main = soup
+    # Stage 2: Content block
+    if has_main:
+        _remove_breadcrumb(main)
+    else:
+        main = _find_fallback_main(soup)
 
-    # Stage 2b: Faculty cards → one atomic line per person.
-    # Runs before the markdown markers below because _faculty_department walks
-    # backwards through the real headings to attribute people on the combined
-    # /faculty listing, and that walk wants the headings untouched.
-    _extract_faculty_cards(main, base_url)
+    # Stage 2b: Person cards → one atomic line per person.
+    # Runs before the markdown markers below because a card is found by its single
+    # <h3>, and those markers would otherwise turn the name into a "###" heading.
+    _extract_people(main, base_url)
+
+    # Stage 2c: page controls. The course area goes first because its Sem buttons
+    # must still be there to find it; the filter bars after the person cards,
+    # because their "Profile" buttons are already gone.
+    _remove_course_area(main, base_url)
+    _remove_filter_bars(main, base_url)
 
     # Stage 3: Add markdown markers for headings, paragraphs, lists
     for tag in main.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
@@ -896,6 +995,8 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
         rows_text = []
         for row in table.find_all("tr"):
             cells = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+            # A label cell ("Tap course for syllabus") is a button hint, not data.
+            cells = [c for c in cells if not _is_label(c)]
             if any(c for c in cells if c):  # skip empty rows
                 rows_text.append("| " + " | ".join(cells) + " |")
         if rows_text:
@@ -908,14 +1009,11 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
     lines = raw_text.split("\n")
     cleaned = []
     seen = set()
-
-    _FOOTER_NOISE = {
-        "developed by",
-        "all rights reserved",
-        "muhammad khawar abbas",
-        "© 2026",
-        "why uoli?",
-    }
+    # A table row repeats only within its own table block, scoped by the last
+    # ordinary line before it (for a semester table, the "Semester N" heading).
+    # Without this, the header row and any equal "Total Courses: 6 | 18 Cr. Hrs"
+    # row of a later semester were dropped as repeats of an earlier semester's.
+    scope = ""
 
     IMPORTANT_SHORT = {"cs", "vc", "it", "hod", "bs", "ms", "phd"}
 
@@ -924,10 +1022,9 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
         if not line:
             continue
         line_lower = line.lower().strip("•#| ")
-        is_heading = line.startswith("#")
-        if not is_heading and line_lower in _NAV_NOISE:
+        if not has_main and any(signal in line_lower for signal in _FOOTER_NOISE):
             continue
-        if any(signal in line_lower for signal in _FOOTER_NOISE):
+        if _is_label(line):
             continue
         is_stat_number = bool(re.match(r'^\d+[%+]?$', line))
         if len(line) < 3 and line_lower not in IMPORTANT_SHORT and not is_stat_number:
@@ -937,6 +1034,10 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
         if re.search(r"[\{\};]", line) and len(line.split()) < 6:
             continue
         dedup_key = re.sub(r"^[#•|\s]+", "", line_lower)
+        if line.startswith("|"):
+            dedup_key = scope + " || " + dedup_key
+        else:
+            scope = dedup_key
         if dedup_key in seen and not is_stat_number:
             continue
         seen.add(dedup_key)
@@ -954,6 +1055,119 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
     if extras:
         return main_text + "\n\n" + "\n\n".join(extras)
     return main_text
+
+
+# textContent, not innerText: on the live site the short "Sem 1" label is a hidden
+# span, which innerText leaves out, so no button would match.
+_TABLE_JS = r"""() => {
+  const main = document.querySelector('main#main-content');
+  if (!main) return null;
+  const btns = [...main.querySelectorAll('button')].filter(b => /^\s*Sem\s*\d+/i.test(b.textContent));
+  if (!btns.length) return null;
+  let box = btns[0];
+  while (box && box !== main) {
+    if (btns.every(b => box.contains(b)) && box.querySelector('table')) break;
+    box = box.parentElement;
+  }
+  const table = box && box !== main ? box.querySelector('table') : null;
+  const heading = box && box !== main ? box.querySelector('h1,h2,h3,h4,h5,h6') : null;
+  return table ? {table: table.outerHTML, heading: heading ? heading.innerText : ''} : null;
+}"""
+
+_ADD_SECTION_JS = """(html) => {
+  const main = document.querySelector('main#main-content');
+  const section = document.createElement('section');
+  section.setAttribute('data-uoli-semesters', '');
+  section.innerHTML = html;
+  main.appendChild(section);
+}"""
+
+
+def _scroll_to_bottom(page, max_rounds: int = 10) -> None:
+    """Scroll until the page stops growing, so lazy sections are in the DOM."""
+    try:
+        last = 0
+        for _ in range(max_rounds):
+            height = page.evaluate("document.body.scrollHeight")
+            if height == last:
+                break
+            last = height
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            page.wait_for_timeout(500)
+    except Exception as exc:
+        logger.debug(f"scroll failed: {exc}")
+
+
+def _read_settled_table(page, max_rounds: int = 15):
+    """Read the course table once it has stopped changing.
+
+    The live table fills in steps (rows first, then the header and the "Total
+    Courses" row), and the first change is not the finished table. So read again
+    every 200 ms until two reads in a row are equal, for at most 3 s (15 rounds).
+    """
+    last = page.evaluate(_TABLE_JS)
+    for _ in range(max_rounds):
+        page.wait_for_timeout(200)
+        current = page.evaluate(_TABLE_JS)
+        if current == last:
+            return current
+        last = current
+    logger.warning("table kept changing for 3 s, copied as it is")
+    return last
+
+
+def _expand_semester_tabs(page) -> None:
+    """Click each 'Sem N' button in turn and keep every semester's table.
+
+    The page shows Semester I only; the other tables exist only after a click. The
+    copies are added to the end of main inside one marked <section>, so the text
+    step reads them and can then drop the original course area. Tabs that are not
+    'Sem N' are only logged, never clicked.
+    """
+    try:
+        buttons = page.locator("main#main-content button").filter(
+            has_text=re.compile(r"^\s*Sem\s*\d+", re.I))
+        count = buttons.count()
+        if count == 0:
+            return
+        other_tabs = [t for t in page.locator('main#main-content [role="tab"]').all_inner_texts()
+                      if not _SEM_BUTTON_RE.match(t)]
+        if other_tabs:
+            logger.info(f"other tabs left unclicked: {other_tabs}")
+
+        parts, heading = [], ""
+        for i in range(count):
+            button = buttons.nth(i)
+            spans = [x.strip() for x in button.locator("span").all_inner_texts() if x.strip()]
+            name = spans[1] if len(spans) > 1 else f"Semester {i + 1}"
+            before = page.evaluate(_TABLE_JS)
+            if i > 0:
+                try:
+                    button.click(timeout=5_000)
+                except Exception as exc:
+                    # Skipped, not copied: the table on screen would still be the
+                    # previous semester's, stored under the wrong name.
+                    logger.warning(f"click on {name!r} failed, semester skipped: {exc}")
+                    continue
+                for _ in range(25):                  # up to 5 s
+                    page.wait_for_timeout(200)
+                    current = page.evaluate(_TABLE_JS)
+                    if current and before and current["table"] != before["table"]:
+                        break
+                else:
+                    logger.warning(f"table did not change after clicking {name!r}")
+            data = _read_settled_table(page)
+            if not data:
+                logger.warning(f"no table found for {name!r}")
+                continue
+            heading = heading or data["heading"]
+            parts.append(f"<h3>{name}</h3>{data['table']}")
+        if parts:
+            title = f"<h2>{heading}</h2>" if heading else ""
+            page.evaluate(_ADD_SECTION_JS, title + "".join(parts))
+            logger.info(f"semester tables copied: {len(parts)} of {count}")
+    except Exception as exc:
+        logger.warning(f"semester tabs not read: {exc}")
 
 
 def _fetch_with_playwright(url: str) -> str | None:
@@ -1000,6 +1214,10 @@ def _fetch_with_playwright(url: str) -> str | None:
                     logger.warning(f"Playwright navigation failed: {url} — {e}")
                     browser.close()
                     return None
+
+            # The site loads some links and sections only when scrolled into view.
+            _scroll_to_bottom(page)
+            _expand_semester_tabs(page)
 
             html = page.content()
             browser.close()
@@ -1064,14 +1282,17 @@ def fetch_page(url: str, session: requests.Session = None) -> tuple[str | None, 
     Scrapes one URL. Playwright first, requests fallback.
 
     Returns (text, reason). text is None for a page that has nothing to
-    contribute; reason then says which of four different things happened:
+    contribute; reason then says which of five different things happened:
 
-        "unreachable"  the fetch failed, or the server did not return HTML
+        "unreachable"  the fetch failed, the server did not return HTML, or the
+                       text step crashed on the page
         "dead"         a server error template — a soft 404
+        "empty"        the page has no content of its own yet (for example a
+                       program page that says "Program Details Not Found")
         "too_short"    under 100 chars of extracted text
         "ok"           text is usable
 
-    The distinction matters operationally. All four used to collapse into None,
+    The distinction matters operationally. All of them used to collapse into None,
     so a completely healthy run of the site reported "Failed: 1" — the 404 page —
     and there was no way to tell that from a network problem without reading the
     log line by line. "dead" is a correct outcome; "unreachable" is one to
@@ -1126,7 +1347,20 @@ def fetch_page(url: str, session: requests.Session = None) -> tuple[str | None, 
     # sentence and a button, so find_contentless flags them and they are never
     # ingested. Their PDFs must be, and that is where the content actually is.
     _note_pdf_links(html, url)
-    text = _extract_text(soup, base_url=url)
+
+    # Checked before _extract_text, which edits the soup. An empty page is skipped
+    # only for this run: it stays in the config.py list and is read again next time,
+    # so it is stored as soon as the website fills it.
+    if _is_empty_page(soup):
+        logger.warning(f"Empty page (no content of its own), not ingesting: {url}")
+        return None, "empty"
+
+    try:
+        text = _extract_text(soup, base_url=url)
+    except Exception as exc:
+        # One odd page must not stop a 115-page run.
+        logger.error(f"Text extraction failed for {url}: {exc}", exc_info=True)
+        return None, "unreachable"
 
     # A soft 404. Checked before the length test so the log names the real
     # reason: this site's error template is 179 chars, comfortably over the
@@ -1153,6 +1387,7 @@ def fetch_page(url: str, session: requests.Session = None) -> tuple[str | None, 
     import config
     max_chars = getattr(config, "MAX_PAGE_CHARS", 12_000)
     if len(text) > max_chars:
+        logger.warning(f"Page cut from {len(text):,} to {max_chars:,} chars: {url}")
         text = text[:max_chars]
 
     logger.info(f"✓ Scraped {url}: {len(text):,} chars")
@@ -1190,37 +1425,6 @@ def scrape_page(url: str, session: requests.Session = None) -> str | None:
     return fetch_page(url, session=session)[0]
 
 
-def _get_image_content_hash(url: str) -> str:
-    """
-    FIX 5: Downloads an image and returns MD5 of its raw bytes.
-
-    WHAT: Computes a fingerprint of the image CONTENT, not the filename.
-    WHY:  Advertisement.jpeg keeps the same URL each semester but the
-          university uploads a new image with new programs and deadlines.
-          URL-based hashing never detects this change.
-          Pixel-level MD5 detects even a single changed pixel.
-    HOW:  Download raw bytes → MD5 → 8-char hex string.
-          If download fails for any reason, returns empty string safely.
-          Caller falls back to HTML-only hash in that case.
-    COST: One HTTP download (~200KB) per homepage scrape, every 6 hours.
-          Negligible — no embedding, no API call.
-    """
-    try:
-        import urllib.request
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "Mozilla/5.0"}
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return hashlib.md5(resp.read()).hexdigest()[:8]
-    except Exception:
-        return ""
-
-
-# URL of the main admissions advertisement image
-# WHY: Kept as a named constant so it is easy to update when
-# university changes the upload path in a future semester.
-_AD_IMAGE_URL = "https://uoli.edu.pk/wp-content/uploads/2026/07/Advertisement.jpeg"
-
 # Markers that separate scraped HTML text from material appended after it.
 # Both are emitted by this module: _extract_images_text writes the first,
 # _extract_social_links the second.
@@ -1232,65 +1436,24 @@ _AD_IMAGE_URL = "https://uoli.edu.pk/wp-content/uploads/2026/07/Advertisement.jp
 # closing one invented its own guess.
 _SOCIAL_MARKER = "\n\nUniversity of Loralai Social Media Pages:"
 
-_HOMEPAGE_URLS = {"https://uoli.edu.pk", "https://uoli.edu.pk/"}
-
 
 def content_hash(text: str, url: str, with_image: bool = True) -> str:
     """The one place a page's change-detection hash is computed.
 
-    Everything that decides "has this page changed since we indexed it?" must
-    call this function. That was not true before, and the consequence was that
-    the two documented cost optimisations in this file never worked once.
+    Everything that decides "has this page changed since we indexed it?" must call
+    this function, so the value compared is always the value stored.
 
-    WHAT WAS BROKEN
-    ───────────────
-    Two different hashes were computed for the same page:
+    Returns the md5 of the HTML text only, with the OCR and social blocks stripped,
+    so a global image or a footer icon set cannot dirty a page whose prose is
+    untouched (one swapped image used to re-embed every page that carried it).
 
-        _process              md5(html-only text), plus "_<imgmd5>" for the
-                              homepage — used to decide whether to skip.
-        load_scraped_page     md5(FULL text, OCR and social blocks included) —
-                              used to decide whether to embed, and the one
-                              actually written to Chroma metadata.
-
-    The value being compared was never the value being stored, so the skip check
-    in _process could not match anything. Proven against the live database: all
-    3124 web chunks carry an 8-character hash and not one contains the "_"
-    separator that the homepage path produces. Fix 4 and Fix 5 have never fired.
-
-    WHY IT COST MONEY
-    ─────────────────
-    The check that does gate embedding, load_scraped_page's, hashes the full text
-    including OCR. The ad banner is OCR'd into many pages. So the exact failure
-    Fix 4 was written to prevent was live the whole time: the university swaps one
-    advertisement image, the OCR text changes on every page carrying it, every one
-    of those hashes changes, and every one of those pages is re-embedded on the
-    next six-hourly scrape. Nothing about the university's actual words changed.
-
-    WHAT THIS RETURNS
-    ─────────────────
-    md5 of the HTML text only, OCR and social blocks stripped — so a global image
-    or a footer icon set cannot dirty a page whose prose is untouched.
-
-    For the homepage the ad image's pixel md5 is appended, because that image
-    keeps its filename across semesters: the <img src> never changes, so text
-    hashing alone cannot see a new admission advertisement. This is the one case
-    where an image genuinely is the content.
-
-    with_image=False skips the network fetch. Callers that must not touch the
-    network (knowledge_base has no session and no business making requests) pass
-    False and accept that a same-filename homepage image swap is invisible to
-    them; the scraper, which owns the network, passes True.
+    `url` and `with_image` are no longer used. They stay so existing callers and
+    tests keep working: the old homepage popup advertisement is gone from the new
+    site, so there is no image to fingerprint any more.
     """
     html_only = page_furniture.strip_image_blocks(text).split(_SOCIAL_MARKER)[0]
-    digest = hashlib.md5(
+    return hashlib.md5(
         html_only.encode("utf-8", errors="ignore")).hexdigest()[:8]
-
-    if with_image and url.rstrip("/").lower() in {u.rstrip("/").lower()
-                                                  for u in _HOMEPAGE_URLS}:
-        img_hash = _get_image_content_hash(_AD_IMAGE_URL)
-        if img_hash:
-            digest = f"{digest}_{img_hash}"
-    return digest
 
 
 def legacy_content_hash(text: str) -> str:
@@ -1410,7 +1573,7 @@ def scrape_all_pages(kb, urls: list = None,
     import config
 
     results = {"scraped": 0, "failed": 0, "skipped": 0, "excluded": 0,
-               "contentless": 0, "dead": 0, "aliases": 0, "pages": [],
+               "contentless": 0, "dead": 0, "empty": 0, "aliases": 0, "pages": [],
                "pdfs": 0, "pdfs_skipped": 0, "pdfs_failed": 0,
                "pdfs_refused": 0,
                "pdf_files": []}
@@ -1454,7 +1617,7 @@ def scrape_all_pages(kb, urls: list = None,
         visited_urls.add(url)
 
         text, reason = fetch_page(url, session=session)
-        time.sleep(0.8)
+        time.sleep(1.0)   # our rule: at least 1 second between pages
         return url, text, reason
 
     # ── pass 1: fetch everything ─────────────────────────────
@@ -1510,6 +1673,10 @@ def scrape_all_pages(kb, urls: list = None,
                 # nothing to give and refusing it is the fix, not a fault. Lumping
                 # the two together made a perfectly healthy run report a failure.
                 results["dead"] += 1
+            elif reason == "empty":
+                # A page with no content of its own yet. Not a fault either: it
+                # is retried on the next run and stored once the site fills it.
+                results["empty"] += 1
             else:
                 # "unreachable" or "too_short" — fetch_page logged which.
                 results["failed"] += 1

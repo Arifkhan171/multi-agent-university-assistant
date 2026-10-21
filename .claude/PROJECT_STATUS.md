@@ -31,6 +31,11 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 **Files**
 - Specs: `.claude/specs/NN_name.md`. Plans: `.claude/plans/NN_name.md`.
 
+**Three sessions (from 21 Oct)**
+- Supervisor session (Claude): writes specs, reviews plans and code, solves problems. It never commits or pushes until the owner says so.
+- Planning session (Opus 5.5 or Fable): uses `.claude/PLANNING_PROMPT.md`, saves the plan and stops. No code.
+- Coding session (Sonnet 5.5): a new one per spec. It follows the approved plan and commits on the branch.
+
 **Flow for each spec (one new session per spec)**
 1. Write the spec here (supervisor session) and push it to `main`.
 2. New session → `/rename NN name`
@@ -127,8 +132,19 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 - `test_page_furniture.py` section 9 checks old pages (`/faculty`, `/bus-routes`...). It will break after the rebuild, so update it.
 - These two old test files are scripts. Run them with `python`, not `pytest`. CLAUDE.md still lists the wrong `pytest` commands.
 
+- Header and footer facts (checked 21 Oct): phone, email and address are also in `/contact`; the motto and "Chartered 2012" are on the home page; all 12 footer PDFs are our 12 kept PDFs. Only the E-Office link is in the header and footer alone. Gap: the text step keeps link words but drops link addresses, so "where do I apply online" may lose the portal address (`uoli.ac.pk/admissions`). Decide: keep important link addresses, and/or add one small "site-wide info" document (portal, fee challan, E-Office, DIMS links) stored once.
+
+- From the spec 05 code review: social media links now come from no page (they are only in the footer), so store them once in the same "site-wide info" note. "Back to All Academic Departments" style link labels leak. Bare `###` / `####` heading lines (old behaviour) remain.
+
 **Spec 08 — rebuild**
 - Clear the old caches first (`ocr_cache.json`, `pdf_cache.json`, `proposition_cache.json`, `page_furniture.json`). Keep the `data/` backup.
+
+**New spec 12b — daily refresh (after spec 08 works)**
+- Today the daily job is OFF (`config.SCRAPE_INTERVAL_HOURS = 0`). When on, it re-reads every page in the `config.py` list and re-stores only pages whose fingerprint (`content_hash`) changed. It does not use dates.
+- Empty pages: fine already. They stay in the list and are checked every run (spec 05 rule).
+- New pages: NOT found today (the list is fixed and the Phase B crawler is off). Add a daily "find new pages" step that reuses the spec 02/02b logic (menu + hub pages, scroll, gentle speed). New addresses with a known shape (`/news/`, `/research/innovation/events/`, `/academics/programs/`, `/academics/departments/`, `/offices/`) are added automatically, with the category from the `config.py` address rules. Others go to a report for the owner.
+- Removed pages: their old text stays in the database. Rule needed: a page that is dead or empty for 3 runs in a row has its old chunks removed, with a log line.
+- Changed pages: check that the old chunks of a changed page are replaced, not kept next to the new ones.
 
 **Later**
 - CLAUDE.md says 70 eval questions. The plan is a 100-question hidden final exam (spec 14). Update CLAUDE.md then.
