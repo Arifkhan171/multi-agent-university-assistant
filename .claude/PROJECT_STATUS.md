@@ -68,7 +68,7 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 | 02b | Find hidden pages, click crawl (`tools/find_hidden_pages.py`) | done, merged |
 | 03 | Update link lists in code (`tools/build_url_lists.py`) | done, merged |
 | 04 | Study the new site structure (`tools/study_site_structure.py`) | done, merged |
-| 05 | Update the scraper for React | **next** |
+| 05 | Update the scraper for React (`.claude/specs/05_update_scraper.md`) | **spec written, code next** |
 | 06–31 | See `uoli_work_plan.md` | waiting |
 
 ---
@@ -139,4 +139,6 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 
 ## 7. Next step
 
-Write **spec 05** (scraper update for React), using section 6 above and the fixtures in `tests/fixtures/site/`.
+Spec 05 is written. Do the code session for it (plan, code, offline tests, one live BS CS check). Then write spec 06.
+
+Spec 05 findings from the page copies (21 Oct): the page title box is a `<header>` INSIDE main (the old scraper deletes all headers, which is why titles were lost); BS CS shows only Semester I (6 courses) until the "Sem 2..8" buttons are clicked; the CS page has 9 people (HOD M. Khawar Abbas listed twice); `/academics/faculty` has 90 people; `_FOOTER_NOISE` contains "muhammad khawar abbas"; `MAX_PAGE_CHARS` 15000 cuts `/academics/undergraduate` (17,681); the page delay is 0.8 s; decision: Phase B crawler off (`USE_AUTO_CRAWLER = False`).
