@@ -222,8 +222,15 @@ Notes:
 
 ---
 
-## 9. Where we are
+## 9. Where we are (21 October 2026)
 
 - 00 Backup of `data/`: done.
-- 01 URL health check: spec written, work in progress.
-- 02 onward: waiting.
+- 01 URL health check: done, merged.
+- 02 Find new pages and PDFs: done, merged.
+- 02b Find hidden pages (extra spec, click crawl): done, merged.
+- 03 Update link lists in code: done, merged.
+- 04 Study the new website structure: done, merged.
+- 05 Update the scraper for React: next.
+- 06 onward: waiting.
+
+Full status, rules and findings: `.claude/PROJECT_STATUS.md`.
