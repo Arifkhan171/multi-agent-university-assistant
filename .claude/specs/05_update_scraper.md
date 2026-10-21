@@ -79,7 +79,7 @@ The text keeps today's format: `#` for headings, `•` for list items, `| a | b 
 
 ## 5. Constraints
 
-- Files that may change: `web_scraper.py`, `config.py` (two settings only), `setup_knowledge_base.py` (the Phase B switch only), and new tests in `tests/test_web_scraper_react.py`.
+- Files that may change: `web_scraper.py`, `config.py` (two settings only), `setup_knowledge_base.py` (the Phase B switch only), `pdf_ingest.py` (one line only: get the OCR reader through `web_scraper._get_ocr_reader()`), and new tests in `tests/test_web_scraper_react.py`.
 - `playwright` and BeautifulSoup only. No new library. No OpenAI.
 - Tests read the files in `tests/fixtures/site/`. No internet in tests.
 - The clicking part (A2) cannot be tested on the copies, because they are saved files. Test it with a small fake HTML page that has working tabs, plus one live check of the BS CS page after your OK.
@@ -94,6 +94,7 @@ The text keeps today's format: `#` for headings, `•` for list items, `| a | b 
 - A person has no email → write "Email not listed." (as today).
 - A person's text has no department → write the line without it.
 - An HOD appears twice (top box and list) → write their lines once.
+- An "empty" page is only skipped for this run. It stays in the `config.py` list and is checked again on every run, so it is stored as soon as the website fills it. Nothing is written to a "never again" list.
 - A long page is cut → log the address and size.
 - A page breaks the text step → log the error, return `"unreachable"`, and go on with the next page.
 
@@ -111,7 +112,7 @@ On the offline copies:
 9. A fake tabs page gives the courses of all its semesters.
 10. Importing `web_scraper` does not load EasyOCR.
 11. `pytest tests/` passes. The old scripts have the same FAIL count as before.
-12. `git diff` shows changes only in the allowed files.
+12. `git diff` shows changes only in the allowed files (section 5).
 
 Live (after your OK, one page):
 13. The BS CS page gives the courses of all 8 semesters (about 48 courses).
@@ -119,18 +120,29 @@ Live (after your OK, one page):
 Human check:
 14. Open the saved text of 3 pages (the plan says where): `about/vc-message`, `academics/departments/computer-science` and `academics/programs/bscs`. Read it. It should look like the page, with no menu or footer.
 
+## 7b. Decisions after the plan review (21 Oct)
+
+1. OCR: `pdf_ingest.py` calls `web_scraper._get_ocr_reader()` (one line), so scanned PDFs still work.
+2. Filter buttons: drop the text of a button group when one of its buttons starts with "All" ("All Departments", "All Events (12)"). A test must prove the FAQ questions on `admissions/faq` are all kept.
+3. Also drop these exact labels: "Fullscreen", "Tap course for details", "View Outline →", "Try Again", "Ask AI", "Ask AI Assistant".
+4. When the semester tables were copied, remove the original course area (the smallest box that holds all the "Sem N" buttons and the table, including the phone copy of the list). Find it by its structure, not by Tailwind class names.
+5. "empty" pages get their own counter, like "dead". They are not counted as "failed".
+6. A "Visiting" badge goes into the line, for example "Lecturer (Visiting)".
+7. Use `config.UNIVERSITY_NAME` in the HOD line.
+8. `_FOOTER_NOISE` is used only on the fallback path (a page with no `main#main-content`), because the footer is already outside `main`.
+
 ## 8. Git
 
 Needed: yes. Pull, new branch, push, PR, merge.
 
 ## 9. What You Do
 
-1. Pull the new spec (I pushed it to `main`).
-2. New session → `/rename 05 update scraper`
-3. `git pull origin main`
-4. `git checkout -b feature/05-update-scraper`
-5. Tell Claude: "Enter plan mode. Read `.claude/specs/05_update_scraper.md`, then only the needed parts of `web_scraper.py` (`_fetch_with_playwright`, `_extract_text`, the faculty card code, `fetch_page`, `content_hash`, the OCR start), the Phase B part of `setup_knowledge_base.py`, and `reports/site_structure/structure_report.md`. Use grep and offset reads. Save the plan to `.claude/plans/05_update_scraper.md`."
-6. Read and approve the plan. Check each code edit.
+1. Planning session: paste the prompt from `.claude/PLANNING_PROMPT.md` with `NN_name` = `05_update_scraper`. It saves `.claude/plans/05_update_scraper.md` and stops.
+2. Bring the plan to the supervisor session for review. Fix it until it is approved.
+3. New coding session (Sonnet) → `/rename 05 update scraper`
+4. `git pull origin main`
+5. `git checkout -b feature/05-update-scraper`
+6. Tell it: "Read `.claude/PROJECT_STATUS.md`, `.claude/specs/05_update_scraper.md` and the approved plan `.claude/plans/05_update_scraper.md`. Do the plan step by step. Show me each edit. Do not commit until I say so." Check each edit, and bring the code to the supervisor for review.
 7. Run the old scripts when Claude asks (Claude gives the commands).
 8. Say OK for the one live BS CS page check.
 9. Do the human check (acceptance 14).

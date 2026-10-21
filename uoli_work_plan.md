@@ -58,6 +58,7 @@ Rule: use P first, L for meaning, and H on a small sample.
 | 10 | Fix wrong-answer bugs: chitchat, keywords, routing, cache, line breaks |
 | 11 | Fix speed and cost |
 | 12 | Fix many-users problems and clean the code |
+| 12b | Daily refresh: find new pages, re-check empty pages, remove deleted pages |
 
 Part A is done when: all links are working, the data report shows no header, footer or repeated garbage, and tests use the same path as students.
 

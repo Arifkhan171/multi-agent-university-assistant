@@ -474,9 +474,15 @@ FEE_FALLBACK_PAGES = [
 # Set to 0 to disable automatic scraping
 SCRAPE_INTERVAL_HOURS = 0
 
+# Phase B of the rebuild (advanced_crawler.py) uses requests + BeautifulSoup, which
+# cannot see the links of the React site, so it only adds noise. The page list in
+# this file is the only source; new pages are found with the spec 02/02b tools.
+USE_AUTO_CRAWLER = False
+
 # Maximum characters to keep from each scraped page
 # Prevents storing entire websites in the knowledge base
-MAX_PAGE_CHARS = 15000  # raised from 8000 — long faculty/policy pages can be 12,000+ chars
+# 15000 cut /academics/undergraduate (17,681 chars); program pages with 8 semesters grow too.
+MAX_PAGE_CHARS = 40000
 
 # ── Fallback Contact ──────────────────────────────────────────
 FALLBACK_PHONE   = "(082) 2441174"
