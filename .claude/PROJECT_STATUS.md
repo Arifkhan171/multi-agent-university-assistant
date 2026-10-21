@@ -77,7 +77,8 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 | 03 | Update link lists in code (`tools/build_url_lists.py`) | done, merged |
 | 04 | Study the new site structure (`tools/study_site_structure.py`) | done, merged |
 | 05 | Update the scraper for React (`.claude/specs/05_update_scraper.md`) | done, merged (live BS CS check: 8 semesters, 47 courses) |
-| 06 | Cleaning rules and links (`.claude/specs/06_cleaning_and_links.md`) | **spec written, waiting for owner review** |
+| 06 | Cleaning rules and links (`.claude/specs/06_cleaning_and_links.md`) | done, merged (PR #7) |
+| 07 | Small live test scrape (dry run) | **next** |
 | 06–31 | See `uoli_work_plan.md` | waiting |
 
 ---
