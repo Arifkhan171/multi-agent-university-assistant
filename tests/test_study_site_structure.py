@@ -242,7 +242,7 @@ def test_load_old_extractor_keeps_ocr_off_and_restores_sys_modules():
 @needs_fixtures
 def test_fixture_index_and_files():
     rows = list(csv.DictReader(open(INDEX, encoding="utf-8", newline="")))
-    assert len(rows) == 25
+    assert len(rows) == 29      # 25 from spec 04 + 4 added in spec 07b
     total = 0
     for row in rows:
         path = ss.FIXTURE_DIR / row["file"]

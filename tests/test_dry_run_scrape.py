@@ -6,6 +6,7 @@ tests/fixtures/site/, the network is blocked, and sleeping only records the dela
 import csv
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -352,3 +353,79 @@ def test_no_openai_import(tmp_path):
 def test_no_playwright_exit_1(monkeypatch):
     monkeypatch.setattr(web_scraper, "PLAYWRIGHT_AVAILABLE", False)
     assert dr.main([]) == 1
+
+
+# ── spec 07b: --pages-from and the new counts ───────────────────────────────
+
+FIRST_REPORT = """# Dry run report (spec 07)
+
+- Run time: 5 seconds
+
+## Selection
+
+- https://uoli.edu.pk
+- https://uoli.edu.pk/academics/programs/bba
+
+- Note: home: saved sample page used (https://uoli.edu.pk)
+
+- PDF: https://uoli.edu.pk/Docs/One.pdf
+- PDF: https://uoli.edu.pk/Docs/Two.pdf
+
+## Pages
+
+| Page | Result |
+|---|---|
+| https://uoli.edu.pk/not-in-selection | ok |
+"""
+
+
+def test_pages_from_reads_selection(tmp_path):
+    report = tmp_path / "first_report.md"
+    report.write_text(FIRST_REPORT, encoding="utf-8")
+    pages, notes, pdfs = dr.read_selection(report)
+    assert pages == ["https://uoli.edu.pk", "https://uoli.edu.pk/academics/programs/bba"]
+    assert notes == ["home: saved sample page used (https://uoli.edu.pk)"]
+    assert pdfs == ["https://uoli.edu.pk/Docs/One.pdf", "https://uoli.edu.pk/Docs/Two.pdf"]
+
+
+def test_pages_from_reads_a_real_report_back(tmp_path):
+    # What the tool writes is what --pages-from reads: the second run gets the same pages.
+    pages = ["https://uoli.edu.pk/a", "https://uoli.edu.pk/b"]
+    res = types.SimpleNamespace(pages=pages, pdfs=["https://uoli.edu.pk/Docs/x.pdf"],
+                                notes=["n"], fetch=types.SimpleNamespace(smallest_gap=lambda: None,
+                                                                        stopped=False),
+                                seconds=1, ocr=False, data_unchanged=True, interrupted=False)
+    report = tmp_path / "r.md"
+    report.write_text("\n".join(dr._top_section(res, None)), encoding="utf-8")
+    assert dr.read_selection(report) == (pages, ["n"], ["https://uoli.edu.pk/Docs/x.pdf"])
+
+
+def test_pages_from_missing_or_empty_stops(tmp_path, monkeypatch):
+    def no_fetch(*_a, **_k):
+        raise AssertionError("a fetch was started")
+    monkeypatch.setattr(dr, "run", no_fetch)
+    monkeypatch.setattr(web_scraper, "PLAYWRIGHT_AVAILABLE", True)
+    empty = tmp_path / "empty.md"
+    empty.write_text("# Dry run report\n\n## Selection\n\n- none\n\n## Pages\n", encoding="utf-8")
+    for bad in (tmp_path / "missing.md", empty):
+        assert dr.main(["--pages-from", str(bad)]) == 1
+    with pytest.raises(dr.SelectionError):
+        dr.read_selection(tmp_path / "missing.md")
+
+
+def test_count_faq_pairs():
+    # As stored: the question is a line of its own, the answer is the next line.
+    lines = ['Fake FAQ', 'How do I apply?', 'Apply online.', 'Where is the fee paid?', 'At ABL.', 'Is there a hostel?', 'Is there a bus?', 'Yes.', '| Table row? |', 'Own question line?']
+    text = "\n".join(lines)
+    assert dr.count_faq_pairs(text) == 3       # the hostel question has no answer line
+    assert dr.count_faq_pairs("### Marked question?\nIts answer.") == 1     # marker kept
+    assert dr.count_faq_pairs("No questions here.\nJust text.") == 0
+
+
+def test_office_people_counted():
+    text = ("Mr. A — Director. Email: a@uoli.edu.pk. Phone: 0320 1467001.\n"
+            "Engr. B — Clerk, Office. Email not listed.\nSome other line.")
+    assert dr.count_people(text) == 1                          # departments: as in the first run
+    assert dr.count_people(text, include_unlisted=True) == 2   # offices: staff without an email too
+    assert dr._people_count("https://uoli.edu.pk/offices/it", "other", text) == 2
+    assert dr._people_count("https://uoli.edu.pk/news/x", "other", text) is None
