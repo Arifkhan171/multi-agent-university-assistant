@@ -150,6 +150,8 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 **Spec 08 — rebuild (from specs 07 and 07b)**
 - Clear or move the old WordPress-era lists before the rebuild: `data/page_furniture.json`, `data/page_contact_lines.json`. A run under 20 pages falls back to them.
 - Watch the log for "scanned pages not read — MAX_OCR_PAGES" (now 150); the dry run could not prove the new limit live.
+- The owner's concern (22 Oct): big PDFs (about 120 pages) were only partly read before, and the partial result was kept in `data/pdf_cache.json`. Delete that cache so every PDF is read fresh. The quality report must show, per PDF: total pages, pages read as text, pages read by OCR, pages skipped, characters stored, and any rejection reason.
+- The quality report must also prove: every page and PDF has the intended category, each category has content, no page or PDF is missing, no empty or duplicate chunks, and a sample of chunks is read by a human.
 - The full rebuild is expected to take about 30–45 minutes (OCR on the first run).
 - Accepted website-side issues (report to the university web team): `[EMAIL_ADDRESS]` on the IT page, form buttons linking to `#`, empty BS Economics and B.Ed Honors pages, `http://` IP links for Fee Challan and DIMS, Qarshi/Qureshi spelling, Mr. Inayat Ullah listed with Mr. Nasrullah's email.
 
@@ -165,6 +167,7 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 
 **Spec 10 — wrong-answer bugs (from the plan 06 review)**
 - `knowledge_base.py` "Force-include department chunks" (about line 3337) uses substring keywords ("cs" also matches "economics", "physics"), and its department list is the old one (no economics etc.). Fix it with whole-word matching and the department names from `config.DEPT_URLS`.
+- `setup_knowledge_base.py` only shows its per-page log lines because importing `advanced_crawler.py` turns logging on. Make the setup script configure its own logging (spec 12).
 - `_extract_social_links` in `web_scraper.py` finds nothing since spec 05 (the spec 06 site note replaces it). Remove it in spec 12 cleanup.
 
 **Later**
