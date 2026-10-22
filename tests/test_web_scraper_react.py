@@ -50,7 +50,7 @@ def title_of(name: str) -> str:
 # ── chrome, titles, aside ───────────────────────────────────────────────────
 
 def test_no_site_chrome_on_any_page():
-    assert len(ALL_PAGES) == 25
+    assert len(ALL_PAGES) == 29     # 25 from spec 04 + 4 added in spec 07b
     for name in ALL_PAGES:
         text = text_of(name)
         for junk in ("Home ›", "UOLI AI Assistant", "Developed by", "Skip to main content"):
@@ -374,3 +374,142 @@ def test_non_sem_tabs_not_clicked(fake_tabs):
     html, _, messages = fake_tabs
     assert "<body data-clicked" not in html   # the page's own script mentions the name
     assert "other tabs left unclicked: ['All Departments']" in messages
+
+
+# ── FAQ answers (fake page, real Chromium, local file only) ─────────────────
+
+# Like the live site: the first answer is open at load (a click would close it), the
+# others exist only after their question is clicked (one answer open at a time), one
+# answer needs 300 ms, and the last question never shows an answer.
+FAKE_FAQ = """<!doctype html><html><body>
+<main id="main-content">
+<header><h1>Fake FAQ</h1></header>
+<p>This fake question page has enough of its own text to count as a real page, so that nothing here is judged empty.</p>
+<input id="search" placeholder="Search questions" value="">
+<div id="cats"><button>All Questions</button><button>General</button><button>Fees</button></div>
+<div id="list">
+  <div class="item"><button class="q" id="q0">How do I apply for admission?</button>
+    <div class="ans"><p>Apply online through the portal.</p>
+    <div><span>Category: General</span><span>Official UOLI Policy</span></div></div></div>
+  <div class="item"><button class="q">Where do I pay the fee?</button></div>
+  <div class="item"><button class="q">Is there a hostel?</button></div>
+  <div class="item"><button class="q">Is there a bus service?</button></div>
+  <div class="item"><button class="q">Can I freeze a semester?</button></div>
+</div>
+</main>
+<script>
+const answers = {1: "Pay at any ABL branch.", 2: "Yes, a hostel is available.", 3: "Yes, a bus service runs daily."};
+const items = [...document.querySelectorAll('.item')];
+function closeAll() { document.querySelectorAll('.ans').forEach(a => a.remove()); }
+function open(i) {
+  closeAll();
+  items[i].insertAdjacentHTML('beforeend', '<div class="ans"><p>' + answers[i] + '</p>' +
+    '<div><span>Category: Fees</span><span>Official UOLI Policy</span></div></div>');
+}
+items.forEach((item, i) => {
+  item.querySelector('button').onclick = () => {
+    if (i === 0) document.body.setAttribute('data-q0-clicked', '1');
+    if (i === 3) setTimeout(() => open(i), 300);       // slow answer
+    else if (i in answers) open(i);                    // the last question: nothing opens
+  };
+});
+document.querySelectorAll('#cats button').forEach(b => b.onclick = () => document.body.setAttribute('data-clicked', '1'));
+document.getElementById('search').addEventListener('input', () => document.body.setAttribute('data-searched', '1'));
+</script></body></html>"""
+
+
+def body_marks(html: str) -> dict:
+    """Attributes the fake page's click handlers put on <body> (the script text itself
+    also contains those names, so the page source cannot be searched)."""
+    return BeautifulSoup(html, "html.parser").body.attrs
+
+
+@pytest.fixture
+def fake_faq(tmp_path, monkeypatch):
+    return open_fake(FAKE_FAQ, tmp_path, monkeypatch)
+
+
+def test_fake_faq_three_answers(fake_faq):
+    _, text, _ = fake_faq
+    lines = text.split("\n")
+    for question, answer in [("How do I apply for admission?", "Apply online through the portal."),
+                             ("Where do I pay the fee?", "Pay at any ABL branch."),
+                             ("Is there a hostel?", "Yes, a hostel is available."),
+                             ("Is there a bus service?", "Yes, a bus service runs daily.")]:
+        assert lines.count(question) == 1                     # each question once
+        assert lines[lines.index(question) + 1] == answer     # and its own answer under it
+
+
+def test_fake_faq_open_answer_copied_without_click(fake_faq):
+    html, text, _ = fake_faq
+    assert "Apply online through the portal." in text
+    assert "data-q0-clicked" not in body_marks(html)
+
+
+def test_fake_faq_labels_dropped(fake_faq):
+    _, text, _ = fake_faq
+    assert "Category:" not in text and "Official UOLI Policy" not in text
+
+
+def test_fake_faq_category_buttons_not_clicked(fake_faq):
+    html, _, _ = fake_faq
+    assert "data-clicked" not in body_marks(html)
+
+
+def test_fake_faq_search_box_unused(fake_faq):
+    html, _, _ = fake_faq
+    assert "data-searched" not in body_marks(html)
+    assert BeautifulSoup(html, "html.parser").select_one("#search").get("value") == ""
+
+
+def test_fake_faq_missing_answer_kept_as_question(fake_faq):
+    _, text, _ = fake_faq
+    assert text.split("\n").count("Can I freeze a semester?") == 1
+
+
+def test_bba_faq_questions_kept_offline():
+    # Offline there is no marked FAQ section, so the 8 questions stay where they are.
+    lines = lines_of("academics__programs__bba.html")
+    questions = [b.get_text(" ", strip=True) for b in
+                 soup_of("academics__programs__bba.html").select_one("main#main-content").find_all("button")
+                 if b.get_text(" ", strip=True).endswith("?")]
+    assert len(questions) == 8
+    for q in questions:
+        assert sum(1 for l in lines if l.endswith(q.split(" ", 1)[1])) == 1
+
+
+def test_faq_originals_removed_only_with_marked_section():
+    item = ('<div><button><span>1</span><span>{q}</span></button></div>')
+    questions = ["What is the fee?", "Is there a hostel?"]
+    body = "<p>" + "Own text of the page. " * 10 + "</p>" + "".join(item.format(q=q) for q in questions)
+    section = ("<section data-uoli-faq><h3>What is the fee?</h3><p>Rs. 2,000.</p></section>")
+    url = "https://uoli.edu.pk/admissions/faq"
+    plain = web_scraper._extract_text(BeautifulSoup(f"<main id='main-content'>{body}</main>", "html.parser"), url)
+    marked = web_scraper._extract_text(
+        BeautifulSoup(f"<main id='main-content'>{body}{section}</main>", "html.parser"), url)
+    assert plain.count("What is the fee?") == 1 and plain.count("Is there a hostel?") == 1
+    # The answered question is not stored twice; the one without an answer stays.
+    assert marked.count("What is the fee?") == 1 and "Rs. 2,000." in marked
+    assert marked.count("Is there a hostel?") == 1
+
+
+def test_max_ocr_pages_150():
+    import pdf_ingest
+    assert pdf_ingest.MAX_OCR_PAGES == 150
+
+
+# Every question has an answer, including the last one. Live bug: deleting the answered
+# question boxes one by one left the last question alone in its list, and its box
+# grew to the whole page.
+FAKE_FAQ_ALL = FAKE_FAQ.replace(
+    '3: "Yes, a bus service runs daily."};', '3: "Yes, a bus service runs daily.", 4: "Yes, after the first semester."};')
+
+
+def test_fake_faq_all_answered_keeps_the_rest_of_the_page(tmp_path, monkeypatch):
+    assert FAKE_FAQ_ALL != FAKE_FAQ
+    _, text, _ = open_fake(FAKE_FAQ_ALL, tmp_path, monkeypatch)
+    lines = text.split("\n")
+    assert "Yes, after the first semester." in lines
+    assert lines[lines.index("Can I freeze a semester?") + 1] == "Yes, after the first semester."
+    assert "Fake FAQ" in lines                                 # the page title survives
+    assert any(l.startswith("This fake question page has enough") for l in lines)

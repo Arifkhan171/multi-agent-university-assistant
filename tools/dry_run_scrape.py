@@ -118,6 +118,42 @@ def select_pdfs(pdfs_csv: Path = PDFS_CSV, count: int = PDF_COUNT) -> list[str]:
     return rows[:count]
 
 
+class SelectionError(ValueError):
+    """The saved report given to --pages-from cannot be used."""
+
+
+def read_selection(report: Path) -> tuple[list[str], list[str], list[str]]:
+    """The (pages, notes, pdfs) of an earlier run, copied from its report.
+
+    Reads the "## Selection" lines in order: "- Note: ..." is a note, "- PDF: ..." a
+    PDF and any other "- https://..." line a page. Addresses are copied, never typed,
+    so the second run reads exactly the pages of the first.
+    """
+    report = Path(report)
+    if not report.is_file():
+        raise SelectionError(f"report file not found: {report}")
+    pages, notes, pdfs = [], [], []
+    inside = False
+    for line in report.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            if inside:
+                break
+            inside = line.strip() == "## Selection"
+            continue
+        if not inside or not line.startswith("- "):
+            continue
+        item = line[2:].strip()
+        if item.startswith("Note: "):
+            notes.append(item[len("Note: "):])
+        elif item.startswith("PDF: "):
+            pdfs.append(item[len("PDF: "):])
+        elif item.startswith("http"):
+            pages.append(item)
+    if not pages:
+        raise SelectionError(f"no page addresses in the Selection of {report}")
+    return pages, notes, pdfs
+
+
 # ── 2. cache redirect and data guard ────────────────────────────────────────
 
 class DataPathError(RuntimeError):
@@ -404,6 +440,7 @@ JUNK_PHRASES = ("uoli ai assistant", "developed by", "skip to main content", "ho
 JUNK_WHOLE_LINE = ("share", "print", "profile", "read article")
 JUNK_STARTS = ("back to", "return to")
 MIN_TITLE = 3
+MAX_QUESTION_CHARS = 250
 MAX_TITLE = 150
 
 
@@ -412,9 +449,31 @@ def count_links(text: str) -> int:
     return len(_URL.findall(text)) + len(_EMAIL.findall(text))
 
 
-def count_people(text: str) -> int:
-    """Person lines of a department or faculty page ("Name — Role. Email: ...")."""
-    return sum(1 for ln in text.splitlines() if "Email:" in ln)
+def count_people(text: str, include_unlisted: bool = False) -> int:
+    """Person lines of a department or faculty page ("Name — Role. Email: ...").
+
+    Office staff often have no email, so their lines end "Email not listed."; those
+    are counted only for office pages, to keep department counts comparable with the
+    first dry run.
+    """
+    return sum(1 for ln in text.splitlines()
+               if "Email:" in ln or (include_unlisted and "Email not listed." in ln))
+
+
+def count_faq_pairs(text: str) -> int:
+    """Question lines ("...?") that are followed by an answer line.
+
+    In the stored text a question is a line of its own (its "###" marker is cleaned
+    away), so a question followed by another question has no answer.
+    """
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    def is_question(line: str) -> bool:
+        return line.lstrip("#• ").endswith("?") and len(line) <= MAX_QUESTION_CHARS
+
+    return sum(1 for i, ln in enumerate(lines[:-1])
+               if is_question(ln) and not is_question(lines[i + 1])
+               and not lines[i + 1].startswith(("#", "|")))
 
 
 def has_head_line(text: str) -> bool:
@@ -506,6 +565,14 @@ def _page_result(url: str, record: dict | None, stored: bool) -> str:
     return "ok" if stored else "not_stored"   # fetched, then dropped by the cleaner
 
 
+def _people_count(url: str, kind: str, text: str) -> int | None:
+    if _path_of(url).startswith("/offices/"):
+        return count_people(text, include_unlisted=True)
+    if kind == "department" or "/faculty" in url:
+        return count_people(text)
+    return None
+
+
 def build_rows(res: RunResult) -> list[dict]:
     """The facts for every selected page, in selection order."""
     raw = {u: r["raw"] for u, r in res.fetch.records.items() if r["raw"]}
@@ -525,7 +592,8 @@ def build_rows(res: RunResult) -> list[dict]:
         rows.append({
             "url": url, "kind": kind, "result": result, "text": text,
             "chars": len(text), "links": count_links(text),
-            "people": count_people(text) if kind == "department" or "/faculty" in url else None,
+            "people": _people_count(url, kind, text),
+            "faq_pairs": count_faq_pairs(text) or None,
             "head_line": has_head_line(text) if kind == "department" else None,
             "semesters": count_semesters(text) if kind == "program" else None,
             "course_rows": count_course_rows(text) if kind == "program" else None,
@@ -663,11 +731,11 @@ def _page_table(rows: list[dict], pdf_rows: list[dict]) -> list[str]:
     def cell(value):
         return "-" if value is None else str(value)
     lines = ["", "## Pages", "",
-             "| Page | Result | Chars | Links | People | Semesters | Course rows | Junk | Cleaner removed |",
-             "|---|---|---|---|---|---|---|---|---|"]
+             "| Page | Result | Chars | Links | People | FAQ pairs | Semesters | Course rows | Junk | Cleaner removed |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         lines.append(f"| {r['url']} | {r['result']} | {r['chars']} | {r['links']} | "
-                     f"{cell(r['people'])} | {cell(r['semesters'])} | {cell(r['course_rows'])} | "
+                     f"{cell(r['people'])} | {cell(r['faq_pairs'])} | {cell(r['semesters'])} | {cell(r['course_rows'])} | "
                      f"{len(r['junk'])} | {r['removed_by_run']} |")
     lines += ["", "## PDFs", "", "| PDF | Result | Chars | Note |", "|---|---|---|---|"]
     lines += [f"| {r['url']} | {r['result']} | {r['chars']} | {r['reason']} |" for r in pdf_rows]
@@ -717,14 +785,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--limit", type=int, default=None,
                         help="read only the first N selected pages and no PDFs")
+    parser.add_argument("--pages-from", type=Path, default=None, metavar="REPORT",
+                        help="read the pages and PDFs listed in the Selection of a "
+                             "saved report.md instead of choosing new ones")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    selection = None
+    if args.pages_from is not None:
+        try:
+            selection = read_selection(args.pages_from)    # before any fetch
+        except SelectionError as exc:
+            logger.error("%s", exc)
+            return 1
 
     if not web_scraper.PLAYWRIGHT_AVAILABLE:
         logger.error("Playwright is not installed; the dry run cannot start.")
         return 1
     try:
-        res = run(limit=args.limit)
+        res = run(limit=args.limit, selection=selection)
     except DataPathError as exc:
         logger.error("%s", exc)
         return 1

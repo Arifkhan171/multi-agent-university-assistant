@@ -684,13 +684,37 @@ def _card_badges(card) -> list[str]:
                 inside_text = True
                 break
         text = span.get_text(" ", strip=True)
-        if text and not inside_text:
+        if text and text != _PLACEHOLDER and not inside_text:
             badges.append(text)
     return badges
 
 
-def _person_lines(card, seen_emails: set) -> list[str]:
-    """One person card as clean sentences; [] if this person was already written."""
+def _claim_email(email: str, name: str, owners: dict, base_url: str = "") -> str | None:
+    """Decide who may show `email` on this page. `owners` maps email -> first name.
+
+    Returns the email to write, "" when another person already owns it (the line then
+    says "Email not listed." rather than pair a name with a stranger's address), or
+    None when it is the same person listed twice.
+    """
+    if not email:
+        return ""
+    key = email.lower()
+    if key not in owners:
+        owners[key] = name
+        return email
+    owner = owners[key]
+    if owner.lower() == name.lower():
+        return None
+    logger.warning(f"{name!r} and {owner!r} share the email {email} — website data "
+                   f"error; the second line says Email not listed. ({base_url})")
+    return ""
+
+
+def _person_lines(card, seen_emails: dict, base_url: str = "") -> list[str]:
+    """One person card as clean sentences; [] if this person was already written.
+
+    seen_emails maps each email written on this page to the name that owns it.
+    """
     name = card.find("h3").get_text(" ", strip=True)
     mailto = card.select_one('a[href^="mailto:"]')
     email = ""
@@ -700,11 +724,11 @@ def _person_lines(card, seen_emails: set) -> list[str]:
     if "@" not in email:
         email = ""
     # The same person can be listed twice on one page (a department head appears in
-    # the head box and again in the list); the second copy adds nothing.
-    if email and email.lower() in seen_emails:
+    # the head box and again in the list); the second copy adds nothing. Two
+    # different people on one email is a website error, and only the first shows it.
+    email = _claim_email(email, name, seen_emails, base_url)
+    if email is None:
         return []
-    if email:
-        seen_emails.add(email.lower())
 
     paragraphs = [p.get_text(" ", strip=True) for p in card.find_all("p")]
     department = next((p for p in paragraphs if _UNIT_RE.match(p)), "")
@@ -747,10 +771,10 @@ def _extract_people(main, base_url: str) -> None:
     without removing the original markup duplicates every field.
     """
     cards = _find_person_cards(main)
-    seen_emails: set = set()
+    seen_emails: dict = {}
     written = 0
     for card in cards:
-        lines = _person_lines(card, seen_emails)
+        lines = _person_lines(card, seen_emails, base_url)
         if lines:
             card.replace_with("\n" + "\n".join(lines) + "\n")
             written += 1
@@ -759,6 +783,182 @@ def _extract_people(main, base_url: str) -> None:
     if cards:
         logger.info(f"person cards: {written} written, {len(cards) - written} "
                     f"repeated, on {base_url}")
+
+
+# ── Office staff cards ─────────────────────────────────────────────────────
+#
+# Office pages list their staff in cards that have no "Profile" button, so the
+# person-card rule above never sees them and get_text() flattens them: the role
+# can land before the name, and a name can be read with a stranger's role or email.
+# A staff card is the largest box that still holds exactly one heading. A heading
+# that starts with a title ("Mr.", "Dr." ...) counts as a person, because page titles
+# and "Office Contact & Location" boxes also carry an email link. A name without a
+# title counts only when it sits in the same roster as such cards (same parent, tag
+# and class), so a staff member without "Mr." is kept and a section box is not.
+
+_HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"]
+_STAFF_TITLE_RE = re.compile(r"^(Mr|Mrs|Ms|Miss|Dr|Prof|Engr)\b", re.I)
+# Starts with 0 or +92 so that a date such as 2026-10-18 is never read as a phone.
+# The extension "(Ext. 115)" is kept: it is what tells people on one number apart.
+_STAFF_PHONE_RE = re.compile(
+    r"(?<![\w@.\-])(?:\+92|0)[\d\s\-()]{8,}\d(?:\s*\(Ext\.?\s*\d+\))?(?![\w])", re.I)
+_NAME_NOT_LISTED = "Name not listed"
+
+
+def _staff_box(heading, main):
+    """The largest box around `heading` that holds no other heading."""
+    box = heading
+    while (box.parent is not None and box.parent is not main
+           and len(box.parent.find_all(_HEADING_TAGS)) == 1):
+        box = box.parent
+    return box
+
+
+def _has_contact_link(box) -> bool:
+    return box.select_one('a[href^="mailto:"], a[href^="tel:"]') is not None
+
+
+def _same_layout(box, other) -> bool:
+    """Two sibling boxes built the same way: same parent, tag and class list."""
+    return (box is not other and box.parent is other.parent and box.name == other.name
+            and box.get("class") == other.get("class"))
+
+
+def _find_staff_cards(main) -> tuple[list, list]:
+    """Staff cards in main, and the titled boxes that were left out (the top box).
+
+    A titled box is a card when it has an email or phone link, or sits beside another
+    titled box. A box with a name but no title is a card when it has the same layout
+    as a card beside it in the same roster, so one staff member without "Mr." is not
+    lost. A box with an empty heading and a contact link is a card whose name is
+    missing. A title or an untitled box alone, with no link and no roster, is not.
+    """
+    boxes, seen = [], set()
+    for heading in main.find_all(_HEADING_TAGS[1:]):
+        text = heading.get_text(" ", strip=True)
+        box = _staff_box(heading, main)
+        if box is heading or id(box) in seen:
+            continue
+        seen.add(id(box))
+        boxes.append((box, bool(_STAFF_TITLE_RE.match(text)), bool(text)))
+    titled_boxes = [box for box, titled, _ in boxes if titled]
+    cards, rejected = [], []
+    for box, titled, named in boxes:
+        if titled:
+            beside = any(other is not box and other.parent is box.parent for other in titled_boxes)
+            if _has_contact_link(box) or beside:
+                cards.append(box)
+            else:
+                rejected.append(box)
+        elif not named and _has_contact_link(box):
+            cards.append(box)
+    anchors = list(cards)
+    for box, titled, named in boxes:
+        if named and not titled and any(_same_layout(box, a) for a in anchors):
+            cards.append(box)
+    order = {id(box): i for i, (box, _, _) in enumerate(boxes)}
+    return sorted(cards, key=lambda box: order[id(box)]), rejected
+
+
+def _card_job(card) -> str:
+    """The first paragraph that is not an office name ("Directorate of ...")."""
+    for p in card.find_all("p"):
+        text = p.get_text(" ", strip=True)
+        if text and not _UNIT_RE.match(text):
+            return text
+    return ""
+
+
+def _card_phones(card) -> list[str]:
+    found = [m.group(0).strip() for m in _STAFF_PHONE_RE.finditer(card.get_text(" ", strip=True))]
+    for link in card.select('a[href^="tel:"]'):
+        value = link.get("href", "")[len("tel:"):].strip()
+        if value and re.sub(r"\D", "", value) not in {re.sub(r"\D", "", f) for f in found}:
+            found.append(value)
+    return found
+
+
+def _card_email(card, base_url: str) -> str:
+    emails = []
+    for link in card.select('a[href^="mailto:"]'):
+        value = link.get("href", "")[len("mailto:"):].split("?", 1)[0].strip()
+        if "@" in value:        # "[EMAIL_ADDRESS]" is the site's own placeholder
+            emails.append(value)
+    if len(emails) > 1:
+        logger.warning(f"staff card with {len(emails)} emails, first used: {emails} on {base_url}")
+    return emails[0] if emails else ""
+
+
+def _staff_entry(card, rejected, office: str, base_url: str) -> dict:
+    heading = card.find(_HEADING_TAGS)
+    name = heading.get_text(" ", strip=True) if heading is not None else ""
+    job = _card_job(card)
+    if not name:
+        # Only a top box that shows the same job may supply the name; a name is
+        # never taken from a nearby card.
+        for top in rejected:
+            if job and _card_job(top).lower() == job.lower():
+                name = top.find(_HEADING_TAGS).get_text(" ", strip=True)
+                break
+        name = name or _NAME_NOT_LISTED
+    unit = next((p.get_text(" ", strip=True) for p in card.find_all("p")
+                 if _UNIT_RE.match(p.get_text(" ", strip=True))), "") or office
+    details = ", ".join(x for x in (job, unit) if x)
+    phones = _card_phones(card)
+
+    def render(email: str) -> str:
+        line = f"{name} — {details}." if details else f"{name}."
+        line += f" Email: {email}." if email else " Email not listed."
+        return line + (f" Phone: {', '.join(phones)}." if phones else "")
+
+    email = _card_email(card, base_url)
+    return {"card": card, "name": name, "email": email, "render": render, "line": render(email)}
+
+
+def _choose_staff_entries(entries: list[dict], base_url: str) -> list[dict]:
+    """Drop repeats. One name keeps its line with an email. One email belongs to one
+    person: the same person twice is one line, a different person on that email keeps
+    a line but with "Email not listed." (see _claim_email)."""
+    kept, owners = [], {}
+    for entry in entries:
+        twin = next((k for k in kept if entry["name"] != _NAME_NOT_LISTED
+                     and k["name"].lower() == entry["name"].lower()), None)
+        if twin is not None:
+            logger.info(f"staff name repeated, line with an email kept: {entry['name']} on {base_url}")
+            if twin["email"] or not entry["email"]:
+                continue
+            kept.remove(twin)
+        email = _claim_email(entry["email"], entry["name"], owners, base_url)
+        if email is None:
+            continue
+        if email != entry["email"]:
+            entry["email"], entry["line"] = "", entry["render"]("")
+        kept.append(entry)
+    return kept
+
+
+def _extract_staff_cards(main, base_url: str) -> None:
+    """Replace every office staff card in-place with one clean line (offices pages only).
+
+    Uses replace_with() for the same reason _extract_people does: markup left in the
+    soup would be read again by get_text() and every field would repeat.
+    """
+    if not urlparse(base_url).path.startswith("/offices/"):
+        return
+    cards, rejected = _find_staff_cards(main)
+    if not cards:
+        return
+    title = main.find("h1")
+    office = title.get_text(" ", strip=True) if title is not None else ""
+    entries = [_staff_entry(card, rejected, office, base_url) for card in cards]
+    kept = _choose_staff_entries(entries, base_url)
+    kept_ids = {id(e["card"]) for e in kept}
+    for entry in entries:
+        if id(entry["card"]) in kept_ids:
+            entry["card"].replace_with("\n" + entry["line"] + "\n")
+        else:
+            entry["card"].decompose()
+    logger.info(f"staff cards: {len(kept)} written, {len(entries) - len(kept)} repeated, on {base_url}")
 
 
 def _remove_landmarks_outside_main(soup: BeautifulSoup, main) -> None:
@@ -784,13 +984,55 @@ def _remove_breadcrumb(main) -> None:
         crumb.decompose()
 
 
+# A cleaning rule that finds the wrong box can delete the page body. No block that
+# this cleaner removes is ever that large: a question with its answer, a related
+# block, a placeholder, a course area are all small next to the page.
+_MAX_BLOCK_SHARE = 0.5
+
+
+def _remove_block(tag, main, what: str, base_url: str = "") -> bool:
+    """Delete `tag`, unless it holds more than half of main's text. Returns True if
+    deleted. The skip is logged as a warning, so a wrong rule is seen, not silent."""
+    total = len(main.get_text(" ", strip=True))
+    size = len(tag.get_text(" ", strip=True))
+    if total and size > _MAX_BLOCK_SHARE * total:
+        logger.warning(f"{what} not removed: it holds {size} of {total} characters "
+                       f"of the page ({base_url})")
+        return False
+    tag.decompose()
+    return True
+
+
+# Images are blocked while a page loads, so the site shows this text in place of
+# every photo. It is not a fact, and beside a name it reads like one ("Status: ...").
+_PLACEHOLDER = "Image Unavailable"
+
+
+def _remove_placeholders(main, base_url: str = "") -> None:
+    """Delete every element whose whole text is the image placeholder.
+
+    Only the smallest such element goes, so a box that also holds real text keeps
+    it. A longer sentence that merely contains the words is not matched.
+    """
+    for tag in main.find_all(True):
+        if tag.parent is None or tag.get_text(" ", strip=True) != _PLACEHOLDER:
+            continue
+        if any(child.get_text(" ", strip=True) == _PLACEHOLDER
+               for child in tag.find_all(True)):
+            continue
+        _remove_block(tag, main, "image placeholder", base_url)
+
+
 # Exact UI labels that carry no information. Matched against a whole line (or a
 # whole table cell), never as a substring, so a real sentence is never touched.
 _BUTTON_LABELS = frozenset({
     "Share", "Print", "Profile", "Profile →", "→",
     "Tap course for syllabus", "Tap course for details", "View Outline →",
-    "Fullscreen", "Try Again", "Ask AI", "Ask AI Assistant",
+    "Fullscreen", "Try Again", "Ask AI", "Ask AI Assistant", "View Image", "Download",
 })
+# Instruction lines for the photo viewer ("Click any photograph to open full-screen
+# view"): they describe a button, not the university. Matched at the start of a line.
+_VIEWER_HINT_STARTS = ("Click any photograph to open full-screen",)
 _LABEL_RE = re.compile(r"^(Sem \d+|Showing \d+ Courses)$")
 _SEM_BUTTON_RE = re.compile(r"^\s*Sem\s*(\d+)", re.I)
 _FILTER_BUTTON_RE = re.compile(r"^All\b")
@@ -823,8 +1065,9 @@ def _remove_filter_bars(main, base_url: str = "") -> None:
         if box is None or box is main or len(box.find_all("button")) > 15:
             continue
         for item in box.find_all("button"):
-            removed.append(item.get_text(" ", strip=True))
-            item.decompose()
+            label = item.get_text(" ", strip=True)
+            if _remove_block(item, main, "filter bar button", base_url):
+                removed.append(label)
     if removed:
         logger.info(f"filter bar buttons removed on {base_url}: {removed}")
 
@@ -860,13 +1103,96 @@ def _remove_course_area(main, base_url: str = "") -> None:
     if area is None:
         logger.warning(f"semester copies found but no course area to remove: {base_url}")
         return
-    logger.info(f"course area removed ({len(area.get_text(strip=True))} chars) on {base_url}")
-    area.decompose()
+    size = len(area.get_text(strip=True))
+    if _remove_block(area, main, "course area", base_url):
+        logger.info(f"course area removed ({size} chars) on {base_url}")
+
+
+# Article pages end with a box of other articles' titles and dates. Every article is
+# scraped on its own page, and a date there can be read as belonging to this article.
+_RELATED_HEADING = "Related Official Notices"
+_RELATED_PREFIXES = ("/news/", "/research/innovation/events/")
+
+
+def _remove_related_block(main, base_url: str = "") -> None:
+    """Delete the "Related Official Notices" box on news and event article pages.
+
+    Found by the exact heading text, never by class names. The box is the smallest
+    parent that holds more than the heading itself. A page without that heading is
+    left alone, and so is the /news list page (no article path after /news/).
+    """
+    path = urlparse(base_url).path
+    if not path.startswith(_RELATED_PREFIXES) or path in _RELATED_PREFIXES:
+        return
+    for heading in main.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+        if heading.get_text(" ", strip=True) != _RELATED_HEADING:
+            continue
+        box = heading
+        while box.parent is not None and box.parent is not main \
+                and box.get_text(" ", strip=True) == _RELATED_HEADING:
+            box = box.parent
+        if box is heading and heading.parent is main:
+            continue
+        size = len(box.get_text(strip=True))
+        if _remove_block(box, main, "related articles block", base_url):
+            logger.info(f"related articles block removed ({size} chars) on {base_url}")
+
+
+_FAQ_ATTR = "data-uoli-faq"
+
+
+def _faq_question_text(button) -> str:
+    """A question button's text without the number badge ("1", "2" ...) in front.
+
+    The browser step (_FAQ_JS) builds the same text, so the question it copied can
+    be matched to the button it came from.
+    """
+    parts = []
+    for node in button.find_all(string=True):
+        text = node.strip()
+        if text and not (text.isdigit() and node.parent.find(True) is None):
+            parts.append(text)
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
+def _faq_box(button, questions: list, main):
+    """The largest box around `button` that holds no other question button."""
+    # By identity: two question buttons with equal markup compare equal as Tags.
+    ids = {id(q) for q in questions}
+    box = button
+    while box.parent is not None and box.parent is not main:
+        inside = [q for q in box.parent.find_all("button") if id(q) in ids]
+        if len(inside) != 1:
+            break
+        box = box.parent
+    return box
+
+
+def _remove_faq_originals(main, base_url: str = "") -> None:
+    """Delete each original question box whose question and answer were copied into
+    the marked FAQ section, so no question is stored twice.
+
+    A question without a copied answer is not in the section and stays where it is.
+    Without the marked section (offline, or no answer could be read) nothing changes.
+    """
+    section = main.select_one(f"section[{_FAQ_ATTR}]")
+    if section is None:
+        return
+    answered = {h.get_text(" ", strip=True) for h in section.find_all("h3")}
+    questions = [b for b in main.find_all("button")
+                 if section not in b.parents and b.get_text(" ", strip=True).endswith("?")]
+    # All boxes are found BEFORE any is deleted. A box is "the largest one around a
+    # single question"; once the neighbours are gone the last question is alone in its
+    # list, and its box would grow to the whole page.
+    boxes = [_faq_box(b, questions, main) for b in questions
+             if _faq_question_text(b) in answered]
+    removed = sum(_remove_block(box, main, "FAQ question box", base_url) for box in boxes)
+    logger.info(f"FAQ question boxes removed: {removed} of {len(questions)} on {base_url}")
 
 
 _LINK_LEFTOVER_STARTS = (
     "back to", "read article", "read more", "view all", "view details",
-    "see more", "see all", "learn more",
+    "see more", "see all", "learn more", "return to", "explore all",
 )
 _DOCUMENT_EXTENSIONS = (".pdf", ".doc", ".docx", ".xls", ".xlsx")
 # A line longer than this that is only a link address is still kept, but logged,
@@ -1048,14 +1374,21 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
     else:
         main = _find_fallback_main(soup)
 
+    # Before the person cards, so the placeholder can never become a badge.
+    _remove_placeholders(main, base_url)
+    _remove_related_block(main, base_url)
+
     # Stage 2b: Person cards → one atomic line per person.
     # Runs before the markdown markers below because a card is found by its single
     # <h3>, and those markers would otherwise turn the name into a "###" heading.
     _extract_people(main, base_url)
+    # After the Profile cards, so only the cards without a Profile button are left.
+    _extract_staff_cards(main, base_url)
 
-    # Stage 2c: page controls. The course area goes first because its Sem buttons
-    # must still be there to find it; the filter bars after the person cards,
-    # because their "Profile" buttons are already gone.
+    # Stage 2c: page controls. The FAQ and course areas go first because their
+    # question and Sem buttons must still be there to find them; the filter bars
+    # after the person cards, because their "Profile" buttons are already gone.
+    _remove_faq_originals(main, base_url)
     _remove_course_area(main, base_url)
     _remove_filter_bars(main, base_url)
     _remove_link_leftovers(main)
@@ -1114,7 +1447,7 @@ def _extract_text(soup: BeautifulSoup, base_url: str = "") -> str:
         line_lower = line.lower().strip("•#| ")
         if not has_main and any(signal in line_lower for signal in _FOOTER_NOISE):
             continue
-        if _is_label(line):
+        if _is_label(line) or line == _PLACEHOLDER or line.startswith(_VIEWER_HINT_STARTS):
             continue
         is_stat_number = bool(re.match(r'^\d+[%+]?$', line))
         if len(line) < 3 and line_lower not in IMPORTANT_SHORT and not is_stat_number:
@@ -1260,6 +1593,125 @@ def _expand_semester_tabs(page) -> None:
         logger.warning(f"semester tabs not read: {exc}")
 
 
+# FAQ answers exist only after their question is clicked. A question is a button in
+# main whose text ends with "?"; category buttons ("General", "Fees") do not, so they
+# are never clicked. The question's box is the largest ancestor that holds no other
+# question button. Labels in the box ("Category: ...", "Official UOLI Policy") are
+# not part of the answer. Reads are by index so Python and JS agree on the order.
+_FAQ_JS = r"""(index) => {
+  const main = document.querySelector('main#main-content');
+  if (!main) return null;
+  const qs = [...main.querySelectorAll('button')].filter(b => /\?\s*$/.test(b.textContent));
+  const btn = qs[index];
+  if (!btn) return null;
+  const parts = [];
+  const walker = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const n = walker.currentNode, t = n.textContent.trim();
+    if (!t || (/^\d+$/.test(t) && n.parentElement.children.length === 0)) continue;
+    parts.push(t);
+  }
+  const question = parts.join(' ').replace(/\s+/g, ' ').trim();
+  let box = btn;
+  while (box.parentElement && box.parentElement !== main &&
+         qs.filter(q => box.parentElement.contains(q)).length === 1) box = box.parentElement;
+  const copy = box.cloneNode(true);
+  copy.querySelectorAll('button').forEach(b => b.remove());
+  copy.querySelectorAll('*').forEach(el => {
+    const t = el.textContent.trim();
+    if (/^Category:/i.test(t) || t === 'Official UOLI Policy') el.remove();
+  });
+  const paras = [...copy.querySelectorAll('p, li')].map(e => e.textContent.trim()).filter(Boolean);
+  const answer = paras.length ? paras.join('\n') : copy.textContent.replace(/\s+/g, ' ').trim();
+  return { question, answer };
+}"""
+
+_ADD_FAQ_JS = r"""(pairs) => {
+  const main = document.querySelector('main#main-content');
+  if (!main) return;
+  const section = document.createElement('section');
+  section.setAttribute('data-uoli-faq', '');
+  for (const [question, answer] of pairs) {
+    const h = document.createElement('h3');
+    h.textContent = question;
+    section.appendChild(h);
+    for (const line of answer.split('\n')) {
+      const p = document.createElement('p');
+      p.textContent = line;
+      section.appendChild(p);
+    }
+  }
+  main.appendChild(section);
+}"""
+
+_FAQ_MAX_QUESTIONS = 40
+_FAQ_QUESTION_RE = re.compile(r"\?\s*$")
+
+
+def _read_settled_faq(page, index: int, max_rounds: int = 15):
+    """Read one question's box until two reads in a row are equal and hold an answer.
+
+    The answer appears a moment after the click, so an empty box is waited on for
+    the whole 3 s (15 rounds), not taken as "no answer" after the first read.
+    """
+    last = page.evaluate(_FAQ_JS, index)
+    for _ in range(max_rounds):
+        page.wait_for_timeout(200)
+        current = page.evaluate(_FAQ_JS, index)
+        if current and current == last and current["answer"]:
+            return current
+        last = current
+    return last
+
+
+def _open_faq_question(page, buttons, index: int, first: dict) -> dict | None:
+    """The question's answer: copied as it is when already open (a click would
+    close it), otherwise after one click. None when it cannot be read."""
+    if first["answer"]:
+        return first
+    address = page.url
+    try:
+        buttons.nth(index).click(timeout=5_000)
+    except Exception as exc:
+        logger.warning(f"click on FAQ question {first['question']!r} failed: {exc}")
+        return None
+    if page.url != address:
+        logger.info(f"FAQ question opened a link, not followed: {first['question']!r}")
+        page.go_back()
+        return None
+    return _read_settled_faq(page, index)
+
+
+def _expand_faq_answers(page) -> None:
+    """Open each FAQ question once and copy its answer into one marked <section>.
+
+    A question whose answer does not show stays a question only. With fewer than two
+    questions the question box cannot be told from the page body, so nothing is done.
+    """
+    try:
+        buttons = page.locator("main#main-content button").filter(has_text=_FAQ_QUESTION_RE)
+        count = buttons.count()
+        if count < 2:
+            return
+        if count > _FAQ_MAX_QUESTIONS:
+            logger.info(f"{count} FAQ questions, only the first {_FAQ_MAX_QUESTIONS} opened")
+        pairs = []
+        for i in range(min(count, _FAQ_MAX_QUESTIONS)):
+            first = page.evaluate(_FAQ_JS, i)
+            if not first:
+                continue
+            data = _open_faq_question(page, buttons, i, first)
+            if data and data["answer"]:
+                pairs.append([data["question"], data["answer"]])
+            else:
+                logger.warning(f"no answer shown for FAQ question {first['question']!r}")
+        if pairs:
+            page.evaluate(_ADD_FAQ_JS, pairs)
+            logger.info(f"FAQ answers copied: {len(pairs)} of {count}")
+    except Exception as exc:
+        logger.warning(f"FAQ answers not read: {exc}")
+
+
 def _fetch_with_playwright(url: str) -> str | None:
     """
     Fetches fully rendered HTML using headless Chromium.
@@ -1308,6 +1760,7 @@ def _fetch_with_playwright(url: str) -> str | None:
             # The site loads some links and sections only when scrolled into view.
             _scroll_to_bottom(page)
             _expand_semester_tabs(page)
+            _expand_faq_answers(page)
 
             html = page.content()
             browser.close()

@@ -78,7 +78,9 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 | 04 | Study the new site structure (`tools/study_site_structure.py`) | done, merged |
 | 05 | Update the scraper for React (`.claude/specs/05_update_scraper.md`) | done, merged (live BS CS check: 8 semesters, 47 courses) |
 | 06 | Cleaning rules and links (`.claude/specs/06_cleaning_and_links.md`) | done, merged (PR #7) |
-| 07 | Small live test scrape (dry run) | **next** |
+| 07 | Small live test scrape (dry run, `tools/dry_run_scrape.py`) | done, merged |
+| 07b | Fixes from the dry run (FAQ answers, placeholders, staff cards, related block, OCR limit) | done after merge; second dry run clean |
+| 08 | Full scrape and rebuild | **next** |
 | 06–31 | See `uoli_work_plan.md` | waiting |
 
 ---
@@ -144,6 +146,12 @@ Problem Statement, Functional Requirements, API contracts (inputs, outputs, data
 **Spec 07 — small test scrape**
 - Spec 05 changed the line de-duplication: table rows now repeat freely under different headings. Watch whether the 15 pages grow too much.
 - `fetch_page` writes `scratch/_dryrun_web_cache.json`. Keep `scratch/` out of git (consider adding it to `.gitignore`).
+
+**Spec 08 — rebuild (from specs 07 and 07b)**
+- Clear or move the old WordPress-era lists before the rebuild: `data/page_furniture.json`, `data/page_contact_lines.json`. A run under 20 pages falls back to them.
+- Watch the log for "scanned pages not read — MAX_OCR_PAGES" (now 150); the dry run could not prove the new limit live.
+- The full rebuild is expected to take about 30–45 minutes (OCR on the first run).
+- Accepted website-side issues (report to the university web team): `[EMAIL_ADDRESS]` on the IT page, form buttons linking to `#`, empty BS Economics and B.Ed Honors pages, `http://` IP links for Fee Challan and DIMS, Qarshi/Qureshi spelling, Mr. Inayat Ullah listed with Mr. Nasrullah's email.
 
 **Spec 08 — rebuild**
 - Clear the old caches first (`ocr_cache.json`, `pdf_cache.json`, `proposition_cache.json`, `page_furniture.json`). Keep the `data/` backup.

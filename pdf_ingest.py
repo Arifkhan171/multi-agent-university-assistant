@@ -101,7 +101,8 @@ MIN_TEXT_LAYER_CHARS = 60
 # half an hour of CPU, and it is the one file already covered by a hand-cleaned
 # docx. Raising this is a deliberate decision, so it is a named constant and the
 # skipped count is logged rather than silently dropped.
-MAX_OCR_PAGES = 90
+# 150: the HEC Anti-Harassment policy has more than 90 scanned pages and lost its last two.
+MAX_OCR_PAGES = 150
 
 _CACHE_PATH = os.path.join("data", "pdf_cache.json")
 _CACHE: dict | None = None
